@@ -1,0 +1,28 @@
+# Local config for extracting SA-Text-style annotations from restored images.
+
+sa1b_base_dir: /scratch2/james2602/TextAwareIR/SA-Text-test
+sa1b_subfolder: unused
+
+bridge_repo_dir: /scratch2/james2602/TextAwareIR/SA-Text_Dataset/Bridging-Text-Spotting
+bridge_config_file: configs/Bridge/TotalText/R_50_poly.yaml
+bridge_weights_file: Bridge_tt.pth
+bridge_env_python: ""
+
+intermediate_output_base_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/text_annotations
+final_dataset_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/text_annotations
+
+log_filename: annotation_pipeline.log
+log_level_console: INFO
+log_level_file: DEBUG
+
+vlm1_name: OVIS
+vlm2_name: Qwen
+blur_vlm_name: Qwen
+
+crop_size: 512
+bridge_confidence_threshold: 0.3
+max_crops_per_image: 3
+
+blur_inverse_prompt: true
+blur_keep_category: Not blurry
+keep_intermediate_files: true

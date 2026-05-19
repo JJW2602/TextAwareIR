@@ -1,4 +1,5 @@
 from typing import List
+import os
 import numpy as np
 import torch
 from torch import nn
@@ -135,8 +136,15 @@ class TransformerDetector(nn.Module):
         self.testr = TESTR(cfg, backbone)
         
         self.recognizer = RecModel(cfg)
-        checkpoint = torch.load("DiG/checkpoint-9.pth", map_location='cpu')
-        self.recognizer.load_state_dict(checkpoint["model"], False)
+        dig_checkpoint_path = "DiG/checkpoint-9.pth"
+        if os.path.isfile(dig_checkpoint_path):
+            checkpoint = torch.load(dig_checkpoint_path, map_location='cpu')
+            self.recognizer.load_state_dict(checkpoint["model"], False)
+        else:
+            print(
+                f"Warning: {dig_checkpoint_path} not found. "
+                "Continuing; MODEL.WEIGHTS is expected to provide recognizer weights."
+            )
 
         for name, p in self.testr.named_parameters():
             p.requires_grad = False

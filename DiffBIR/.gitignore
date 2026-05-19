@@ -17,3 +17,5 @@ __pycache__
 /runs
 /tests
 /meta_files
+/inputs/sa_text_test/
+/slurm/logs/

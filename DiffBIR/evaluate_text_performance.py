@@ -105,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         help="Bounding-box format used in the prediction JSON.",
     )
     parser.add_argument(
+        "--image-id-list",
+        type=Path,
+        default=None,
+        help=(
+            "Optional newline-delimited image IDs or filenames to evaluate. "
+            "Useful for per-chunk evaluation."
+        ),
+    )
+    parser.add_argument(
         "--iou-threshold",
         type=float,
         default=0.5,
@@ -156,6 +165,19 @@ def require_pyarrow() -> Any:
 
 def normalize_image_id(value: str) -> str:
     return Path(value).stem
+
+
+def load_image_id_filter(path: Path | None) -> set[str] | None:
+    if path is None:
+        return None
+    image_ids: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            image_ids.add(normalize_image_id(value.split(",")[0]))
+    return image_ids
 
 
 def normalize_text(text: str, ignore_case: bool) -> str:
@@ -681,6 +703,16 @@ def main() -> None:
         text_field=args.pred_text_field,
         bbox_format=args.pred_bbox_format,
     )
+    image_id_filter = load_image_id_filter(args.image_id_list)
+    if image_id_filter is not None:
+        gt_by_image = {
+            image_id: gt_by_image.get(image_id, [])
+            for image_id in sorted(image_id_filter)
+        }
+        pred_by_image = {
+            image_id: pred_by_image.get(image_id, [])
+            for image_id in sorted(image_id_filter)
+        }
     (
         summary,
         matches,
@@ -693,6 +725,8 @@ def main() -> None:
         iou_threshold=args.iou_threshold,
         ignore_case=args.ignore_case,
     )
+    if image_id_filter is not None:
+        summary["image_id_filter_count"] = len(image_id_filter)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with (args.output_dir / "summary.json").open("w", encoding="utf-8") as handle:

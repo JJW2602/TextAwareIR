@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=diffbir_sat_lv2
-#SBATCH --array=0-19%20
-#SBATCH --partition=big_suma_rtx3090
+#SBATCH --job-name=diffbir_2gpu
+#SBATCH --array=0-1
+#SBATCH --partition=suma_a6000
 #SBATCH --qos=big_qos
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -20,12 +20,11 @@ PYTHON_BIN="${PYTHON_BIN:-/home/james2602/miniconda3/envs/diffbir/bin/python}"
 
 PARQUET_PATH="${SA_TEXT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
 LEVEL="${SA_TEXT_LEVEL:-2}"
-CHUNK_SIZE="${CHUNK_SIZE:-50}"
+CHUNK_SIZE="${CHUNK_SIZE:-500}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 START_INDEX=$((TASK_ID * CHUNK_SIZE))
-
-RUN_NAME="${RUN_NAME:-sa_text_test/lv${LEVEL}_tiled_v2.1}"
-INPUT_DIR="${DIFFBIR_DIR}/inputs/sa_text_test/lv${LEVEL}/chunk_${TASK_ID}"
+RUN_NAME="${RUN_NAME:-sa_text_test/lv${LEVEL}_2gpu}"
+INPUT_DIR="${DIFFBIR_DIR}/inputs/sa_text_test/lv${LEVEL}/2gpu_chunk_${TASK_ID}"
 OUTPUT_ROOT="${DIFFBIR_DIR}/results/${RUN_NAME}"
 OUTPUT_DIR="${OUTPUT_ROOT}/chunk_${TASK_ID}"
 MANIFEST_PATH="${OUTPUT_ROOT}/manifests/chunk_${TASK_ID}.csv"
@@ -39,17 +38,7 @@ TILING_ENABLED="${DIFFBIR_TILING_ENABLED:-false}"
 
 mkdir -p "${DIFFBIR_DIR}/slurm/logs" "${OUTPUT_ROOT}/manifests"
 
-echo "task_id=${TASK_ID}"
-echo "start_index=${START_INDEX}"
-echo "chunk_size=${CHUNK_SIZE}"
-echo "level=${LEVEL}"
-echo "input_dir=${INPUT_DIR}"
-echo "output_dir=${OUTPUT_DIR}"
-echo "python=${PYTHON_BIN}"
-echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
-echo "tiling_enabled=${TILING_ENABLED}"
-
-"${PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/export_sa_text_lq_chunk.py" \
+"${PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/export_sa_text_lq_chunk.py" \
   --parquet "${PARQUET_PATH}" \
   --level "${LEVEL}" \
   --start "${START_INDEX}" \
@@ -59,7 +48,6 @@ echo "tiling_enabled=${TILING_ENABLED}"
   --skip-existing
 
 cd "${DIFFBIR_DIR}"
-
 "${PYTHON_BIN}" inference.py \
   task=sr \
   model.version=v2.1 \
