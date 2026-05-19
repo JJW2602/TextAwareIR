@@ -1,0 +1,45 @@
+model:
+  config_testr: testr/configs/TESTR/TESTR_R_50_Polygon.yaml
+
+io:
+  input: ./assets/gopro/lq
+  output_dir: ./infer_result
+  output_size: model       # used only when patch.enabled is false
+  max_images: null
+  save_cleaned: false
+
+patch:
+  enabled: true
+  size: 512
+  overlap: 64
+
+visualization:
+  save_prompt_traces: true
+  save_pred_text_images: true
+  save_patch_text_regions: false
+  visualize_patches: true
+  visualize_text_regions: true
+
+sampling:
+  steps: 50
+  cfg_scale: 1.0
+  rescale_cfg: false
+
+prompt:
+  style: CAPTION           # choose from [CAPTION, TAG]
+  initial: ""
+  negative: ""
+
+tsm:
+  score_threshold: 0.5
+  update_prompt: true
+
+runtime:
+  seed: 25
+
+weights:
+  sd_path: null
+  swinir_path: null
+  diffbir_ckpt: null
+  terediff_ckpt: null
+  testr_ckpt: null

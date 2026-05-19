@@ -1,0 +1,56 @@
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and experiment tracking
+*.log
+wandb/
+lightning_logs/
+runs/
+outputs/
+output/
+results/
+result/
+*_result/
+infer_result/
+val_gopro_result/
+
+# Local editor/agent state
+.claude/
+.codex/
+.agents/
+.gitmeta/
+.nested_git_backup/
+
+# Datasets and generated data
+/SA-Text/
+/SA-Text-test/
+/dataset/
+/DiffBIR/inputs/gopro/
+/DiffBIR/inputs/SA-Text/
+/TAIR/assets/gopro/
+
+# Model weights and large binary artifacts
+**/weights/
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.bin
+*.parquet
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.npz
+*.npy
+
+# OS files
+.DS_Store
+Thumbs.db

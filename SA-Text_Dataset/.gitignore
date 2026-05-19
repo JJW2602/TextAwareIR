@@ -1,0 +1,12 @@
+*.jpg
+*.csv
+*.json
+*.png
+*.pyc
+__pycache__/
+*.pth
+*.sh
+# Build artefacts
+Bridging-Text-Spotting/*.egg-info/
+Bridging-Text-Spotting/build/
+*.so

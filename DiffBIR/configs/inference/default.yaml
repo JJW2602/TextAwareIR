@@ -1,0 +1,78 @@
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
+
+task: sr
+upscale: 4
+
+model:
+  version: v2.1
+  train_cfg: ""
+  ckpt: ""
+
+sampling:
+  sampler: edm_dpm++_3m_sde
+  steps: 10
+  start_point_type: noise
+  cfg_scale: 6.0
+  rescale_cfg: false
+  noise_aug: 0
+  s_churn: 0
+  s_tmin: 0
+  s_tmax: 300
+  s_noise: 1
+  eta: 1
+  order: 1
+  strength: 1
+
+tiling:
+  cleaner:
+    enabled: false
+    tile_size: 512
+    tile_stride: 256
+  vae_encoder:
+    enabled: false
+    tile_size: 256
+  vae_decoder:
+    enabled: false
+    tile_size: 256
+  cldm:
+    enabled: false
+    tile_size: 512
+    tile_stride: 256
+
+caption:
+  name: llava
+  llava_bit: "4"
+  pos_prompt: >-
+    Cinematic, High Contrast, highly detailed, taken using a Canon EOS R camera,
+    hyper detailed photo - realistic maximum detail, 32k, Color Grading, ultra HD,
+    extreme meticulous detailing, skin pore detailing, hyper sharpness, perfect
+    without deformations.
+  neg_prompt: >-
+    painting, oil painting, illustration, drawing, art, sketch, oil painting,
+    cartoon, CG Style, 3D render, unreal engine, blurring, dirty, messy,
+    worst quality, low quality, frames, watermark, signature, jpeg artifacts,
+    deformed, lowres, over-smooth.
+
+guidance:
+  enabled: false
+  loss: w_mse
+  scale: 0.0
+
+io:
+  input: inputs/demo/bsr
+  n_samples: 1
+  output: results/v2.1_demo_bsr
+
+runtime:
+  seed: 231
+  device: cuda
+  precision: fp16
+  batch_size: 1
