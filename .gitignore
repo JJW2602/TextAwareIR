@@ -54,3 +54,7 @@ val_gopro_result/
 # OS files
 .DS_Store
 Thumbs.db
+
+# etc
+git_textawareir.sh
+install.sh

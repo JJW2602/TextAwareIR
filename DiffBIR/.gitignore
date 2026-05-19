@@ -5,6 +5,7 @@ __pycache__
 /exps
 *.sh
 !install_env.sh
+!slurm/*.sh
 /weights
 /temp
 /results
