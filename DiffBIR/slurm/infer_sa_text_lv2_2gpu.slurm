@@ -9,8 +9,8 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a.out
-#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a.err
+#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.out
+#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.err
 
 set -euo pipefail
 
@@ -35,8 +35,16 @@ CFG_SCALE="${DIFFBIR_CFG_SCALE:-6.0}"
 CAPTIONER="${DIFFBIR_CAPTIONER:-llava}"
 PRECISION="${DIFFBIR_PRECISION:-fp16}"
 TILING_ENABLED="${DIFFBIR_TILING_ENABLED:-false}"
+LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}}"
+RUN_LOG="${DIFFBIR_DIR}/slurm/logs/infer_${LOG_STAMP}_chunk_${TASK_ID}.log"
 
 mkdir -p "${DIFFBIR_DIR}/slurm/logs" "${OUTPUT_ROOT}/manifests"
+exec > >(tee -a "${RUN_LOG}") 2>&1
+
+echo "Log: ${RUN_LOG}"
+echo "Host: $(hostname)"
+echo "Chunk: chunk_${TASK_ID}"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 
 "${PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/export_sa_text_lq_chunk.py" \
   --parquet "${PARQUET_PATH}" \

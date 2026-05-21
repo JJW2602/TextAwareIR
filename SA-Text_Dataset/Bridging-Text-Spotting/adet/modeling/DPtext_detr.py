@@ -346,6 +346,17 @@ class TransformerPureDetector(nn.Module):
         for scores_per_image, labels_per_image, ctrl_point_per_image, image_size in zip(
                 scores, labels, ctrl_point_coord, image_sizes
         ):
+            if os.environ.get("BRIDGE_DEBUG_SCORES"):
+                top_scores = scores_per_image.detach().flatten().topk(
+                    min(10, scores_per_image.numel())
+                )[0].cpu().tolist()
+                print(
+                    "BRIDGE_DEBUG_SCORES "
+                    f"threshold={self.test_score_threshold} "
+                    f"image_size={tuple(image_size)} "
+                    f"top_scores={[round(float(score), 6) for score in top_scores]}",
+                    flush=True,
+                )
             selector = scores_per_image >= self.test_score_threshold
             scores_per_image = scores_per_image[selector]
             labels_per_image = labels_per_image[selector]

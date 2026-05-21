@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import argparse
+import csv
 import glob
 import multiprocessing as mp
 import os
+import sys
 import time
 import cv2
 import tqdm
@@ -74,6 +76,71 @@ def initialize_results():
         "images": [],
         "annotations": []
     }
+
+
+def write_recognized_text_summaries(results, output_dir):
+    """Write human-readable text summaries without changing the main JSON schema."""
+    annotations_by_image = {}
+    for annotation in results.get("annotations", []):
+        file_name = annotation.get("file_name", "")
+        annotations_by_image.setdefault(file_name, []).append(annotation)
+
+    summary = {
+        "num_images": len(results.get("images", [])),
+        "num_annotations": len(results.get("annotations", [])),
+        "images": [],
+    }
+    for image in results.get("images", []):
+        file_name = image.get("file_name", "")
+        annotations = annotations_by_image.get(file_name, [])
+        texts = []
+        for annotation in annotations:
+            texts.append(
+                {
+                    "id": annotation.get("id"),
+                    "text": annotation.get("rec", ""),
+                    "score": annotation.get("score"),
+                    "bbox": annotation.get("bbox"),
+                }
+            )
+        summary["images"].append(
+            {
+                "file_name": file_name,
+                "instances": image.get("instances", len(texts)),
+                "texts": texts,
+            }
+        )
+
+    summary_json = os.path.join(output_dir, "recognized_texts_summary.json")
+    with open(summary_json, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    summary_csv = os.path.join(output_dir, "recognized_texts.csv")
+    with open(summary_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["file_name", "annotation_id", "score", "text", "bbox"],
+        )
+        writer.writeheader()
+        for annotation in results.get("annotations", []):
+            writer.writerow(
+                {
+                    "file_name": annotation.get("file_name", ""),
+                    "annotation_id": annotation.get("id", ""),
+                    "score": annotation.get("score", ""),
+                    "text": annotation.get("rec", ""),
+                    "bbox": json.dumps(annotation.get("bbox", [])),
+                }
+            )
+
+    summary_txt = os.path.join(output_dir, "recognized_texts.txt")
+    with open(summary_txt, "w", encoding="utf-8") as f:
+        for image in summary["images"]:
+            texts = [entry["text"] for entry in image["texts"] if entry.get("text")]
+            joined = " | ".join(texts)
+            f.write(f"{image['file_name']}\t{joined}\n")
+
+    return summary_json, summary_csv, summary_txt
 
 class AsyncPredictor:
     """
@@ -345,6 +412,18 @@ def process_result(info, predictions, results, current_annotation_id, demo, outp
     return added_annotations
 
 
+def should_log_progress(done, total, every):
+    return every > 0 and (done == total or done % every == 0)
+
+
+def log_image_progress(logger, stage, done, total, annotations_count=None):
+    percent = (done / total * 100.0) if total else 100.0
+    suffix = ""
+    if annotations_count is not None:
+        suffix = f", annotations={annotations_count}"
+    logger.info(f"{stage} progress: {done}/{total} images ({percent:.1f}%){suffix}")
+
+
 def get_parser():
     parser = argparse.ArgumentParser(description="Text Detection Inference")
     parser.add_argument(
@@ -391,6 +470,15 @@ def get_parser():
         help="Buffer size for parallel processing. If 0, use default size."
     )
     parser.add_argument(
+        "--log-progress-every",
+        type=int,
+        default=int(os.environ.get("BRIDGE_LOG_PROGRESS_EVERY", "25")),
+        help=(
+            "Write one log line every N processed images. "
+            "Use 0 to disable progress log lines."
+        ),
+    )
+    parser.add_argument(
         "--opts",
         help="Modify config options using the command-line 'KEY VALUE' pairs",
         default=[],
@@ -417,6 +505,8 @@ if __name__ == "__main__":
     # Initialize results dictionary
     results = initialize_results()
     annotation_id = 1
+    processing_errors = 0
+    processed_images = 0
 
     # Check if output directory exists, create if it doesn't
     if not os.path.exists(args.output):
@@ -442,6 +532,7 @@ if __name__ == "__main__":
         logger.info(f"Found {len(input_files)} valid image files from {len(args.input)} specified files")
     
     assert input_files, "No valid image files found"
+    total_images = len(input_files)
 
     
 
@@ -485,12 +576,37 @@ if __name__ == "__main__":
                             demo, args.output, args.no_visualization
                         )
                         annotation_id += added
+                        processed_images += 1
+                        if should_log_progress(
+                            processed_images, total_images, args.log_progress_every
+                        ):
+                            log_image_progress(
+                                logger,
+                                "Bridge",
+                                processed_images,
+                                total_images,
+                                len(results["annotations"]),
+                            )
             except Exception as e:
-                logger.error(f"Error processing {path}: {e}")
+                processing_errors += 1
+                logger.exception(f"Error processing {path}: {e}")
+                processed_images += 1
+                if should_log_progress(
+                    processed_images, total_images, args.log_progress_every
+                ):
+                    log_image_progress(
+                        logger,
+                        "Bridge",
+                        processed_images,
+                        total_images,
+                        len(results["annotations"]),
+                    )
                 continue
     else:
         # Synchronous processing
         for path in tqdm.tqdm(input_files, desc="Processing images"):
+            width = 0
+            height = 0
             try:
                 # Read the image
                 img = read_image(path, format="BGR")
@@ -565,19 +681,43 @@ if __name__ == "__main__":
                         path, len(predictions["instances"]), time.time() - start_time
                     )
                 )
+                processed_images += 1
+                if should_log_progress(
+                    processed_images, total_images, args.log_progress_every
+                ):
+                    log_image_progress(
+                        logger,
+                        "Bridge",
+                        processed_images,
+                        total_images,
+                        len(results["annotations"]),
+                    )
                 
                 # Save visualization if enabled
                 if not args.no_visualization and vis_output is not None:
                     out_filename = os.path.join(args.output, image_info["file_name"])
                     vis_output.save(out_filename)
                     
-            except:
+            except Exception as exc:
+                processing_errors += 1
+                logger.exception(f"Error processing {path}: {exc}")
                 results["images"].append({
                     "file_name": os.path.basename(path),
                     "width": width,
                     "height": height,
                     "instances": 0
                 })
+                processed_images += 1
+                if should_log_progress(
+                    processed_images, total_images, args.log_progress_every
+                ):
+                    log_image_progress(
+                        logger,
+                        "Bridge",
+                        processed_images,
+                        total_images,
+                        len(results["annotations"]),
+                    )
                 continue
 
     # Save the detection results to JSON
@@ -586,3 +726,16 @@ if __name__ == "__main__":
         json.dump(results, f, indent=2)
     
     logger.info(f"Results saved to {output_json_path}")
+    summary_paths = write_recognized_text_summaries(results, args.output)
+    logger.info(
+        "Recognized text summaries saved to: "
+        + ", ".join(str(path) for path in summary_paths)
+    )
+    if processing_errors:
+        logger.warning(
+            f"Encountered {processing_errors} image processing errors out of "
+            f"{len(input_files)} images."
+        )
+    if processing_errors == len(input_files):
+        logger.error("All images failed during Bridge inference.")
+        sys.exit(1)

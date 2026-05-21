@@ -152,11 +152,28 @@ def run_vlm_recognition(model_name, annotations_json_path, crop_image_dir, outpu
     total_annotations = len(data['annotations'])
     processed_count = 0
     error_count = 0
+    progress_every = int(
+        config.get("vlm_progress_log_every", os.environ.get("VLM_PROGRESS_LOG_EVERY", 25))
+    )
     # Keep Start Info with count
     logging.info(f"Processing {total_annotations} annotations...")
 
+    def log_vlm_progress(idx):
+        if progress_every <= 0:
+            return
+        if idx != total_annotations and idx % progress_every != 0:
+            return
+        percent = (idx / total_annotations * 100.0) if total_annotations else 100.0
+        logging.info(
+            f"{model_name} OCR progress: {idx}/{total_annotations} "
+            f"annotations ({percent:.1f}%), errors/skipped={error_count}"
+        )
+
     # Keep Progress Bar
-    for annotation in tqdm.tqdm(data['annotations'], desc=f"Running {model_name} OCR"):
+    for idx, annotation in enumerate(
+        tqdm.tqdm(data['annotations'], desc=f"Running {model_name} OCR"),
+        start=1,
+    ):
         processed_count += 1
         file_name = annotation['file_name']
         image_path = os.path.join(crop_image_dir, file_name)
@@ -167,10 +184,12 @@ def run_vlm_recognition(model_name, annotations_json_path, crop_image_dir, outpu
                 image_cache[file_name] = img
             except FileNotFoundError:
                 error_count += 1
+                log_vlm_progress(idx)
                 continue # Skip silently
             except Exception as e:
                 logging.error(f"Failed load image {image_path}: {e}. Skipping ann {annotation.get('id', 'N/A')}.") 
                 error_count += 1
+                log_vlm_progress(idx)
                 continue
         else:
             img = image_cache[file_name]
@@ -179,6 +198,7 @@ def run_vlm_recognition(model_name, annotations_json_path, crop_image_dir, outpu
         tight_crop_img = _crop_tight(img, bbox)
         if tight_crop_img is None:
             error_count += 1
+            log_vlm_progress(idx)
             continue # Skip silently
 
         vlm_text = f"Error: No {model_name} Result"
@@ -198,6 +218,7 @@ def run_vlm_recognition(model_name, annotations_json_path, crop_image_dir, outpu
         new_annotation['VLM'] = vlm_text
         new_annotation['has_text'] = has_text
         enriched_annotations.append(new_annotation)
+        log_vlm_progress(idx)
 
     output_data = {"images": data["images"], "annotations": enriched_annotations}
     write_json(output_data, output_json_path)

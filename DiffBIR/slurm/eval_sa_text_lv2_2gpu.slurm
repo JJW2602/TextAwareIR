@@ -9,8 +9,8 @@
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a.out
-#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a.err
+#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.out
+#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.err
 
 set -euo pipefail
 
@@ -26,9 +26,17 @@ OUTPUT_BASE="${OUTPUT_BASE:-${RESULTS_ROOT}/text_annotations}"
 OUTPUT_DIR="${OUTPUT_BASE}/${CHUNK_NAME}"
 CONFIG_PATH="${CONFIG_PATH:-${DIFFBIR_DIR}/slurm/helpers/sa_text_annotation_config.yaml}"
 GT_PARQUET="${GT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
+LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}}"
+RUN_LOG="${DIFFBIR_DIR}/slurm/logs/eval_${LOG_STAMP}_${CHUNK_NAME}.log"
 
 mkdir -p "${DIFFBIR_DIR}/slurm/logs"
 cd "${PROJECT_DIR}"
+exec > >(tee -a "${RUN_LOG}") 2>&1
+
+echo "Log: ${RUN_LOG}"
+echo "Host: $(hostname)"
+echo "Chunk: ${CHUNK_NAME}"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 
 "${PRED_PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/extract_sa_text_annotations.py" \
   --results-root "${RESULTS_ROOT}" \

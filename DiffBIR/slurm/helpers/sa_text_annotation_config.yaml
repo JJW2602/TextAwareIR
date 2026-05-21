@@ -8,8 +8,8 @@ bridge_config_file: configs/Bridge/TotalText/R_50_poly.yaml
 bridge_weights_file: Bridge_tt.pth
 bridge_env_python: ""
 
-intermediate_output_base_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/text_annotations
-final_dataset_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/text_annotations
+intermediate_output_base_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_2gpu/text_annotations
+final_dataset_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_2gpu/text_annotations
 
 log_filename: annotation_pipeline.log
 log_level_console: INFO
