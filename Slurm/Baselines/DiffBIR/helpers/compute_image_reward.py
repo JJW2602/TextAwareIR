@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         "--per-image-csv",
         type=Path,
         default=Path(
-            "/scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/"
+            "/scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/sa_text_test_lv2_a6000/"
             "GT_DiffBIR_inference/evaluation/per_image.csv"
         ),
     )
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=Path(
-            "/scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/"
+            "/scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/sa_text_test_lv2_a6000/"
             "GT_DiffBIR_inference/evaluation/per_image_reward"
         ),
     )

@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         "--gt-parquet",
         type=Path,
         default=Path(
-            "/scratch2/james2602/TextAwareIR/SA-Text-test/data/"
+            "/scratch2/james2602/TextAwareIR/Dataset/SA-Text-test/data/"
             "test-00000-of-00001.parquet"
         ),
         help="Path to the SA-Text-test parquet file.",
@@ -127,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sa-text-pipeline-root",
         type=Path,
-        default=Path("/scratch2/james2602/TextAwareIR/SA-Text_Dataset"),
+        default=Path("/scratch2/james2602/TextAwareIR/Dataset_pipeline/SA-Text_Dataset"),
         help="Root of the local SA-Text dataset-curation repository.",
     )
     parser.add_argument(

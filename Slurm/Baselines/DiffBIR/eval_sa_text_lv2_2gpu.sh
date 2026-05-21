@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/scratch2/james2602/TextAwareIR"
-DIFFBIR_DIR="${PROJECT_DIR}/DiffBIR"
+ROOT_DIR="/scratch2/james2602/TextAwareIR"
+DIFFBIR_DIR="${ROOT_DIR}/DiffBIR"
+RESULTS_DIR="${ROOT_DIR}/Results"
+SLURM_DIR="${ROOT_DIR}/Slurm/Baselines/DiffBIR"
 PRED_PYTHON_BIN="${PRED_PYTHON_BIN:-/home/james2602/miniconda3/envs/dataset_curation/bin/python}"
 EVAL_PYTHON_BIN="${EVAL_PYTHON_BIN:-/home/james2602/miniconda3/envs/diffbir/bin/python}"
 LEVEL="${SA_TEXT_LEVEL:-2}"
-RESULTS_ROOT="${RESULTS_ROOT:-${DIFFBIR_DIR}/results/sa_text_test/lv${LEVEL}_a6000}"
+RESULTS_ROOT="${RESULTS_ROOT:-${RESULTS_DIR}/Baselines/DiffBIR/sa_text_test_lv${LEVEL}_a6000}"
 OUTPUT_BASE="${OUTPUT_BASE:-${RESULTS_ROOT}/text_annotations}"
-CONFIG_PATH="${CONFIG_PATH:-${DIFFBIR_DIR}/slurm/helpers/sa_text_annotation_config.yaml}"
-GT_PARQUET="${GT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
+CONFIG_PATH="${CONFIG_PATH:-${SLURM_DIR}/helpers/sa_text_annotation_config.yaml}"
+GT_PARQUET="${GT_PARQUET:-${ROOT_DIR}/Dataset/SA-Text-test/data/test-00000-of-00001.parquet}"
 CHUNKS="${CHUNKS:-chunk_0,chunk_1}"
 LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_$$}"
 
-mkdir -p "${DIFFBIR_DIR}/slurm/logs"
+mkdir -p "${SLURM_DIR}/logs"
 
 detect_visible_gpu_count() {
   "${PRED_PYTHON_BIN}" - <<'PY'
@@ -63,12 +65,12 @@ run_chunk() {
   local gpu_id="$1"
   local chunk_name="$2"
   local output_dir="${OUTPUT_BASE}/${chunk_name}"
-  local log="${DIFFBIR_DIR}/slurm/logs/eval_${LOG_STAMP}_${chunk_name}.log"
+  local log="${SLURM_DIR}/logs/eval_${LOG_STAMP}_${chunk_name}.log"
 
   echo "[GPU ${gpu_id}] ${chunk_name}: annotation + evaluation"
   echo "Log: ${log}"
   {
-    cd "${PROJECT_DIR}"
+    cd "${ROOT_DIR}"
     echo "Log stamp: ${LOG_STAMP}"
     echo "Host: $(hostname)"
     echo "Chunk: ${chunk_name}"
@@ -100,7 +102,7 @@ except Exception as exc:
     sys.exit(2)
 PY
     CUDA_VISIBLE_DEVICES="${gpu_id}" "${PRED_PYTHON_BIN}" \
-      "${DIFFBIR_DIR}/slurm/helpers/extract_sa_text_annotations.py" \
+      "${SLURM_DIR}/helpers/extract_sa_text_annotations.py" \
       --results-root "${RESULTS_ROOT}" \
       --chunks "${chunk_name}" \
       --output-dir "${output_dir}" \

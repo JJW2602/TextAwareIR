@@ -1,15 +1,15 @@
 # Local config for extracting SA-Text-style annotations from restored images.
 
-sa1b_base_dir: /scratch2/james2602/TextAwareIR/SA-Text-test
+sa1b_base_dir: /scratch2/james2602/TextAwareIR/Dataset/SA-Text-test
 sa1b_subfolder: unused
 
-bridge_repo_dir: /scratch2/james2602/TextAwareIR/SA-Text_Dataset/Bridging-Text-Spotting
+bridge_repo_dir: /scratch2/james2602/TextAwareIR/Dataset_pipeline/SA-Text_Dataset/Bridging-Text-Spotting
 bridge_config_file: configs/Bridge/TotalText/R_50_poly.yaml
 bridge_weights_file: Bridge_tt.pth
 bridge_env_python: ""
 
-intermediate_output_base_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_2gpu/text_annotations
-final_dataset_dir: /scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_2gpu/text_annotations
+intermediate_output_base_dir: /scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/sa_text_test_lv2_2gpu/text_annotations
+final_dataset_dir: /scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/sa_text_test_lv2_2gpu/text_annotations
 
 log_filename: annotation_pipeline.log
 log_level_console: INFO

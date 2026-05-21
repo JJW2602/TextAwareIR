@@ -32,9 +32,16 @@ val_gopro_result/
 /SA-Text/
 /SA-Text-test/
 /dataset/
+/Dataset/SA-Text/
+/Dataset/SA-Text-test/
+/Dataset/gopro/
 /DiffBIR/inputs/gopro/
 /DiffBIR/inputs/SA-Text/
+/DiffBIR/debug_bridge/
 /TAIR/assets/gopro/
+
+# Experiment outputs (heavy: 3.5+ GB of PNGs, CSVs, wandb)
+/Results/
 
 # Model weights and large binary artifacts
 **/weights/

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/scratch2/james2602/TextAwareIR"
-DIFFBIR_DIR="${PROJECT_DIR}/DiffBIR"
+ROOT_DIR="/scratch2/james2602/TextAwareIR"
+DIFFBIR_DIR="${ROOT_DIR}/DiffBIR"
+RESULTS_DIR="${ROOT_DIR}/Results"
+SLURM_DIR="${ROOT_DIR}/Slurm/Baselines/DiffBIR"
 PYTHON_BIN="${PYTHON_BIN:-/home/james2602/miniconda3/envs/diffbir/bin/python}"
 
-PARQUET_PATH="${SA_TEXT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
+PARQUET_PATH="${SA_TEXT_PARQUET:-${ROOT_DIR}/Dataset/SA-Text-test/data/test-00000-of-00001.parquet}"
 LEVEL="${SA_TEXT_LEVEL:-2}"
 CHUNK_SIZE="${CHUNK_SIZE:-500}"
-RUN_NAME="${RUN_NAME:-sa_text_test/lv${LEVEL}_2gpu}"
-OUTPUT_ROOT="${DIFFBIR_DIR}/results/${RUN_NAME}"
+RUN_NAME="${RUN_NAME:-sa_text_test_lv${LEVEL}_2gpu}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${RESULTS_DIR}/Baselines/DiffBIR/${RUN_NAME}}"
 
 UPSCALE="${DIFFBIR_UPSCALE:-4}"
 STEPS="${DIFFBIR_STEPS:-10}"
@@ -19,7 +21,7 @@ PRECISION="${DIFFBIR_PRECISION:-fp16}"
 TILING_ENABLED="${DIFFBIR_TILING_ENABLED:-false}"
 LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_$$}"
 
-mkdir -p "${DIFFBIR_DIR}/slurm/logs" "${OUTPUT_ROOT}/manifests"
+mkdir -p "${SLURM_DIR}/logs" "${OUTPUT_ROOT}/manifests"
 
 detect_visible_gpu_count() {
   "${PYTHON_BIN}" - <<'PY'
@@ -59,10 +61,10 @@ run_chunk() {
   local gpu_id="$1"
   local task_id="$2"
   local start_index=$((task_id * CHUNK_SIZE))
-  local input_dir="${DIFFBIR_DIR}/inputs/sa_text_test/lv${LEVEL}/2gpu_chunk_${task_id}"
+  local input_dir="${OUTPUT_ROOT}/inputs/lq${LEVEL}/chunk_${task_id}"
   local output_dir="${OUTPUT_ROOT}/chunk_${task_id}"
   local manifest="${OUTPUT_ROOT}/manifests/chunk_${task_id}.csv"
-  local log="${DIFFBIR_DIR}/slurm/logs/infer_${LOG_STAMP}_chunk_${task_id}.log"
+  local log="${SLURM_DIR}/logs/infer_${LOG_STAMP}_chunk_${task_id}.log"
 
   echo "[GPU ${gpu_id}] chunk_${task_id}: rows ${start_index}-$((start_index + CHUNK_SIZE - 1))"
   echo "Log: ${log}"
@@ -97,7 +99,7 @@ except Exception as exc:
     print(f"ERROR: CUDA is visible but allocation failed before DiffBIR starts: {exc}", file=sys.stderr)
     sys.exit(2)
 PY
-    "${PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/export_sa_text_lq_chunk.py" \
+    "${PYTHON_BIN}" "${SLURM_DIR}/helpers/export_sa_text_lq_chunk.py" \
       --parquet "${PARQUET_PATH}" \
       --level "${LEVEL}" \
       --start "${start_index}" \

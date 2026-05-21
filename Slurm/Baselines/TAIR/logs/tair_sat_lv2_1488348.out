@@ -1,0 +1,45 @@
+Using GPUs in parallel: GPUs=0 1 chunks=chunk_0 chunk_1
+[GPU 0] chunk_0: LQ export -> TAIR inference -> normalize -> annotation
+Log: /scratch2/james2602/TextAwareIR/TAIR/slurm/logs/tair_sa_text_20260521_130807_572643_chunk_0.log
+[GPU 1] chunk_1: LQ export -> TAIR inference -> normalize -> annotation
+Log: /scratch2/james2602/TextAwareIR/TAIR/slurm/logs/tair_sa_text_20260521_130807_572643_chunk_1.log
+chunk_0 TAIR inference + annotation done
+chunk_1 TAIR inference + annotation done
+Running TAIR reward evaluation
+chunk_0: images=500 gt=1145 pred=1082 matched=775
+chunk_1: images=500 gt=1061 pred=1047 matched=771
+
+Wrote summary to: /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/evaluation/tair/summary.md
+   detection F1 = 71.33%   mean NED = 0.5120
+   flow-grpo reward mean (over matched) = 0.5006
+N images with GT: 1000
+final_reward      mean=-0.185  median=0.200  range=[-9.90, 1.00]
+final_reward_norm mean=0.237  median=0.312  range=[-1.00, 1.00]
+fraction positive / zero / negative: 55.40% / 11.70% / 32.90%
+Output: /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/evaluation/tair/per_image_reward
+Running DiffBIR reward evaluation for side-by-side comparison
+chunk_0: images=500 gt=1145 pred=1697 matched=700
+chunk_1: images=500 gt=1061 pred=1658 matched=654
+
+Wrote summary to: /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/evaluation/diffbir/summary.md
+   detection F1 = 48.70%   mean NED = 0.4466
+   flow-grpo reward mean (over matched) = 0.4309
+N images with GT: 1000
+final_reward      mean=-0.481  median=0.000  range=[-10.97, 1.00]
+final_reward_norm mean=0.028  median=0.000  range=[-1.00, 1.00]
+fraction positive / zero / negative: 43.60% / 12.50% / 43.90%
+Output: /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/evaluation/diffbir/per_image_reward
+Creating GT/LQ/TAIR/DiffBIR visualizations
+chunk_0: wrote 500 visualizations, skipped 0
+chunk_1: wrote 500 visualizations, skipped 0
+Output: /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/visualizations/gt_lq_tair_diffbir
+Total written: 1000, total skipped: 0
+
+TAIR SA-Text lv2 pipeline complete
+Run root:             /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3
+LQ2 inputs:           /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/inputs/lq2
+TAIR native outputs:  /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/tair_raw
+TAIR HQ normalized:   /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/tair_hq
+TAIR annotations:     /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/text_annotations/tair
+Reward eval:          /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/evaluation
+Visualizations:       /scratch2/james2602/TextAwareIR/TAIR/results/sa_text_test/lv2_chunks_0_1_tair_stage3/visualizations/gt_lq_tair_diffbir

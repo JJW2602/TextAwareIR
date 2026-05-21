@@ -1,0 +1,14 @@
+{
+  "created_at_utc": "2026-05-21T14:02:47.321163+00:00",
+  "source_dir": "/scratch2/james2602/TextAwareIR/Dataset/SA-Text",
+  "count": 10000,
+  "manifest": "/scratch2/james2602/TextAwareIR/TAIRL/train_data/sa_text_train_10000.jsonl",
+  "ids": "/scratch2/james2602/TextAwareIR/TAIRL/train_data/sa_text_train_10000_ids.txt",
+  "shards": {
+    "/scratch2/james2602/TextAwareIR/Dataset/SA-Text/data/train-00000-of-00026.parquet": 4596,
+    "/scratch2/james2602/TextAwareIR/Dataset/SA-Text/data/train-00001-of-00026.parquet": 4596,
+    "/scratch2/james2602/TextAwareIR/Dataset/SA-Text/data/train-00002-of-00026.parquet": 808
+  },
+  "first_id": "sa_100000_crop_2",
+  "last_id": "sa_1154294_crop_0"
+}

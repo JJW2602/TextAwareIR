@@ -77,12 +77,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gt-parquet",
         type=Path,
-        default=Path("/scratch2/james2602/TextAwareIR/SA-Text-test/data/test-00000-of-00001.parquet"),
+        default=Path(
+            "/scratch2/james2602/TextAwareIR/Dataset/SA-Text-test/data/"
+            "test-00000-of-00001.parquet"
+        ),
     )
     parser.add_argument(
         "--results-root",
         type=Path,
-        default=Path("/scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000"),
+        default=Path(
+            "/scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/"
+            "sa_text_test_lv2_a6000"
+        ),
         help="Run root that contains chunk_*/ and text_annotations/.",
     )
     parser.add_argument("--chunks", nargs="+", default=["chunk_0", "chunk_1"])
@@ -94,7 +100,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/scratch2/james2602/TextAwareIR/DiffBIR/results/sa_text_test/lv2_a6000/GT_DiffBIR_inference/evaluation"),
+        default=Path(
+            "/scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/"
+            "sa_text_test_lv2_a6000/GT_DiffBIR_inference/evaluation"
+        ),
     )
     parser.add_argument("--iou-threshold", type=float, default=0.5)
     parser.add_argument(

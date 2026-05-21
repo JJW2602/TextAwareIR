@@ -9,28 +9,30 @@
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.out
-#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.err
+#SBATCH --output=/scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/logs/%x_%A_%a_%j.out
+#SBATCH --error=/scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/logs/%x_%A_%a_%j.err
 
 set -euo pipefail
 
-PROJECT_DIR="/scratch2/james2602/TextAwareIR"
-DIFFBIR_DIR="${PROJECT_DIR}/DiffBIR"
+ROOT_DIR="/scratch2/james2602/TextAwareIR"
+DIFFBIR_DIR="${ROOT_DIR}/DiffBIR"
+RESULTS_DIR="${ROOT_DIR}/Results"
+SLURM_DIR="${ROOT_DIR}/Slurm/Baselines/DiffBIR"
 PRED_PYTHON_BIN="${PRED_PYTHON_BIN:-/home/james2602/miniconda3/envs/dataset_curation/bin/python}"
 EVAL_PYTHON_BIN="${EVAL_PYTHON_BIN:-/home/james2602/miniconda3/envs/diffbir/bin/python}"
 LEVEL="${SA_TEXT_LEVEL:-2}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 CHUNK_NAME="chunk_${TASK_ID}"
-RESULTS_ROOT="${RESULTS_ROOT:-${DIFFBIR_DIR}/results/sa_text_test/lv${LEVEL}_a6000}"
+RESULTS_ROOT="${RESULTS_ROOT:-${RESULTS_DIR}/Baselines/DiffBIR/sa_text_test_lv${LEVEL}_a6000}"
 OUTPUT_BASE="${OUTPUT_BASE:-${RESULTS_ROOT}/text_annotations}"
 OUTPUT_DIR="${OUTPUT_BASE}/${CHUNK_NAME}"
-CONFIG_PATH="${CONFIG_PATH:-${DIFFBIR_DIR}/slurm/helpers/sa_text_annotation_config.yaml}"
-GT_PARQUET="${GT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
+CONFIG_PATH="${CONFIG_PATH:-${SLURM_DIR}/helpers/sa_text_annotation_config.yaml}"
+GT_PARQUET="${GT_PARQUET:-${ROOT_DIR}/Dataset/SA-Text-test/data/test-00000-of-00001.parquet}"
 LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}}"
-RUN_LOG="${DIFFBIR_DIR}/slurm/logs/eval_${LOG_STAMP}_${CHUNK_NAME}.log"
+RUN_LOG="${SLURM_DIR}/logs/eval_${LOG_STAMP}_${CHUNK_NAME}.log"
 
-mkdir -p "${DIFFBIR_DIR}/slurm/logs"
-cd "${PROJECT_DIR}"
+mkdir -p "${SLURM_DIR}/logs"
+cd "${ROOT_DIR}"
 exec > >(tee -a "${RUN_LOG}") 2>&1
 
 echo "Log: ${RUN_LOG}"
@@ -38,7 +40,7 @@ echo "Host: $(hostname)"
 echo "Chunk: ${CHUNK_NAME}"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 
-"${PRED_PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/extract_sa_text_annotations.py" \
+"${PRED_PYTHON_BIN}" "${SLURM_DIR}/helpers/extract_sa_text_annotations.py" \
   --results-root "${RESULTS_ROOT}" \
   --chunks "${CHUNK_NAME}" \
   --output-dir "${OUTPUT_DIR}" \

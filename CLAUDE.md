@@ -4,24 +4,26 @@
 
 ```
 TextAwareIR/
-├── TAIR/                  # Text-Aware Image Restoration (ICLR 2026)
-│   ├── terediff/          # TeReDiff 메인 모델
-│   ├── testr/             # Text Spotting 모듈
-│   ├── detectron2/        # Text Spotting backbone
-│   ├── configs/           # train/val YAML configs
-│   ├── run_script/        # 학습/평가 실행 스크립트
-│   ├── train.py
-│   ├── val.py
-│   └── initialize.py
-├── DiffBIR/               # DiffBIR (Motionblur RL 학습 backbone)
-│   ├── diffbir/           # 모델 코드
-│   ├── inputs/            # 입력 이미지
-│   ├── results/           # 출력 결과
-│   ├── weights/           # 사전학습 가중치
-│   └── inference.py
-├── SA-Text/               # SA-Text 학습 데이터셋 (HuggingFace parquet, 12GB)
-├── SA-Text-test/          # SA-Text 테스트셋
-└── SA-Text_Dataset/       # 데이터셋 구축 파이프라인 코드
+├── TAIR/                  # Text-Aware Image Restoration baseline 코드
+├── DiffBIR/               # DiffBIR baseline 코드
+├── TAIRL/                 # TAIRL 코드 작업 공간
+├── Results/
+│   ├── Baselines/
+│   │   ├── TAIR/          # TAIR baseline 결과
+│   │   ├── DiffBIR/       # DiffBIR baseline 결과
+│   │   └── Compare/       # baseline 비교 eval / visualization
+│   └── TAIRL/
+├── Slurm/
+│   ├── Baselines/
+│   │   ├── TAIR/
+│   │   └── DiffBIR/
+│   └── TAIRL/
+├── Dataset/
+│   ├── SA-Text/
+│   ├── SA-Text-test/
+│   └── gopro/
+└── Dataset_pipeline/
+    └── SA-Text_Dataset/
 ```
 
 ## 연구 프로젝트

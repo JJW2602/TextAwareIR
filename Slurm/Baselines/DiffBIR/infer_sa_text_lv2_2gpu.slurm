@@ -9,23 +9,25 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.out
-#SBATCH --error=/scratch2/james2602/TextAwareIR/DiffBIR/slurm/logs/%x_%A_%a_%j.err
+#SBATCH --output=/scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/logs/%x_%A_%a_%j.out
+#SBATCH --error=/scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/logs/%x_%A_%a_%j.err
 
 set -euo pipefail
 
-PROJECT_DIR="/scratch2/james2602/TextAwareIR"
-DIFFBIR_DIR="${PROJECT_DIR}/DiffBIR"
+ROOT_DIR="/scratch2/james2602/TextAwareIR"
+DIFFBIR_DIR="${ROOT_DIR}/DiffBIR"
+RESULTS_DIR="${ROOT_DIR}/Results"
+SLURM_DIR="${ROOT_DIR}/Slurm/Baselines/DiffBIR"
 PYTHON_BIN="${PYTHON_BIN:-/home/james2602/miniconda3/envs/diffbir/bin/python}"
 
-PARQUET_PATH="${SA_TEXT_PARQUET:-${PROJECT_DIR}/SA-Text-test/data/test-00000-of-00001.parquet}"
+PARQUET_PATH="${SA_TEXT_PARQUET:-${ROOT_DIR}/Dataset/SA-Text-test/data/test-00000-of-00001.parquet}"
 LEVEL="${SA_TEXT_LEVEL:-2}"
 CHUNK_SIZE="${CHUNK_SIZE:-500}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 START_INDEX=$((TASK_ID * CHUNK_SIZE))
-RUN_NAME="${RUN_NAME:-sa_text_test/lv${LEVEL}_2gpu}"
-INPUT_DIR="${DIFFBIR_DIR}/inputs/sa_text_test/lv${LEVEL}/2gpu_chunk_${TASK_ID}"
-OUTPUT_ROOT="${DIFFBIR_DIR}/results/${RUN_NAME}"
+RUN_NAME="${RUN_NAME:-sa_text_test_lv${LEVEL}_2gpu}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${RESULTS_DIR}/Baselines/DiffBIR/${RUN_NAME}}"
+INPUT_DIR="${OUTPUT_ROOT}/inputs/lq${LEVEL}/chunk_${TASK_ID}"
 OUTPUT_DIR="${OUTPUT_ROOT}/chunk_${TASK_ID}"
 MANIFEST_PATH="${OUTPUT_ROOT}/manifests/chunk_${TASK_ID}.csv"
 
@@ -36,9 +38,9 @@ CAPTIONER="${DIFFBIR_CAPTIONER:-llava}"
 PRECISION="${DIFFBIR_PRECISION:-fp16}"
 TILING_ENABLED="${DIFFBIR_TILING_ENABLED:-false}"
 LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}}"
-RUN_LOG="${DIFFBIR_DIR}/slurm/logs/infer_${LOG_STAMP}_chunk_${TASK_ID}.log"
+RUN_LOG="${SLURM_DIR}/logs/infer_${LOG_STAMP}_chunk_${TASK_ID}.log"
 
-mkdir -p "${DIFFBIR_DIR}/slurm/logs" "${OUTPUT_ROOT}/manifests"
+mkdir -p "${SLURM_DIR}/logs" "${OUTPUT_ROOT}/manifests"
 exec > >(tee -a "${RUN_LOG}") 2>&1
 
 echo "Log: ${RUN_LOG}"
@@ -46,7 +48,7 @@ echo "Host: $(hostname)"
 echo "Chunk: chunk_${TASK_ID}"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 
-"${PYTHON_BIN}" "${DIFFBIR_DIR}/slurm/helpers/export_sa_text_lq_chunk.py" \
+"${PYTHON_BIN}" "${SLURM_DIR}/helpers/export_sa_text_lq_chunk.py" \
   --parquet "${PARQUET_PATH}" \
   --level "${LEVEL}" \
   --start "${START_INDEX}" \

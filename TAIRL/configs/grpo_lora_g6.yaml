@@ -1,0 +1,105 @@
+paths:
+  diffbir_train_config: /scratch2/james2602/TextAwareIR/DiffBIR/configs/train/train_stage2_v2.1.yaml
+  sd_path: /scratch2/james2602/TextAwareIR/DiffBIR/weights/sd2.1-base-zsnr-laionaes5.ckpt
+  controlnet_path: /scratch2/james2602/TextAwareIR/DiffBIR/weights/DiffBIR_v2.1.pt
+  swinir_path: /scratch2/james2602/TextAwareIR/DiffBIR/weights/realesrgan_s4_swinir_100k.pth
+
+data:
+  parquet: null
+  manifest: /scratch2/james2602/TextAwareIR/TAIRL/train_data/sa_text_train_10000.jsonl
+  level: 2
+  start: 0
+  max_samples: 10000
+  image_size: 512
+  prompt_mode: gt_text
+  fixed_prompt: "A high-quality restored image with clear readable text."
+  negative_prompt: ""
+
+lora:
+  target_root: controlnet
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  include_linear: true
+  include_conv1x1: true
+  target_keywords:
+    - input_blocks
+    - middle_block
+    - zero_convs
+
+sample:
+  steps: 8
+  cfg_scale: 6.0
+  strength: 1.0
+  start_point_type: noise
+  noise_aug: 0
+  rescale_cfg: false
+
+reward:
+  backend: bridge
+  variant: final_reward_norm
+  miss_penalty: 1.0
+  false_positive_penalty: 0.25
+  iou_threshold: 0.5
+  bridge_score_threshold: 0.0
+  config: /scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/helpers/sa_text_annotation_config.yaml
+  pipeline_root: /scratch2/james2602/TextAwareIR/Dataset_pipeline/SA-Text_Dataset
+  bridge_env_python: /home/james2602/miniconda3/envs/dataset_curation/bin/python
+  work_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g6_reward_work
+  keep_images_every: 25
+  constant_value: 0.0
+  clip_min: -2.0
+  clip_max: 2.0
+
+ddpo:
+  ppo_epochs: 1
+  clip_range: 0.1
+  kl_coef: 0.02
+  logprob_reduce: mean
+  advantage_mode: ema
+  baseline_beta: 0.9
+  normalize_advantage: false
+  reward_scale: 1.0
+
+grpo:
+  group_size: 6
+  generation_microbatch: 1
+  ppo_epochs: 1
+  clip_range: 0.1
+  kl_coef: 0.02
+  logprob_reduce: mean
+  normalize_advantage: true
+  advantage_epsilon: 1.0e-6
+  reward_scale: 1.0
+
+wandb:
+  enabled: true
+  project: TAIRL
+  entity: null
+  mode: online
+  run_name: null
+  group: null
+  tags:
+    - diffbir
+    - lora
+    - bridge_reward
+  log_images_every: 5
+  num_log_images: 4
+  log_tables_every: 5
+
+train:
+  algorithm: grpo
+  output_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g6/debug
+  seed: 231
+  batch_size: 1
+  num_workers: 0
+  train_steps: 50
+  learning_rate: 3.0e-5
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  precision: fp16
+  log_every: 1
+  ckpt_every: 25
+  progress: false

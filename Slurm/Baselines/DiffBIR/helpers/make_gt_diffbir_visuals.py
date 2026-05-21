@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         "--parquet",
         type=Path,
         default=Path(
-            "/scratch2/james2602/TextAwareIR/SA-Text-test/data/"
+            "/scratch2/james2602/TextAwareIR/Dataset/SA-Text-test/data/"
             "test-00000-of-00001.parquet"
         ),
     )
@@ -30,8 +30,8 @@ def parse_args() -> argparse.Namespace:
         "--results-root",
         type=Path,
         default=Path(
-            "/scratch2/james2602/TextAwareIR/DiffBIR/results/"
-            "sa_text_test/lv2_a6000"
+            "/scratch2/james2602/TextAwareIR/Results/Baselines/DiffBIR/"
+            "sa_text_test_lv2_a6000"
         ),
     )
     parser.add_argument(
