@@ -6,10 +6,13 @@ For each image with num_gt GT instances and num_matched IoU>=thr matches:
 
     matched_mean_reward = mean over matched pairs of  max(1 - lev / len(gt_text), 0)
     missed              = num_gt - num_matched
+    false_positive      = num_pred - num_matched
     final_reward        = matched_mean_reward - miss_penalty * missed
+                          - false_positive_penalty * false_positive
 
 We also report a normalized variant:
-    final_reward_norm   = matched_mean_reward - (missed / num_gt)
+    final_reward_norm   = matched_mean_reward - miss_penalty * missed / num_gt
+                          - false_positive_penalty * false_positive / num_gt
 
 Reads per_image.csv produced by eval_diffbir_text_reward.py and writes a small
 summary + plots so the reward signal is easy to inspect.
@@ -20,9 +23,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import statistics
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("MPLCONFIGDIR", f"/tmp/matplotlib-{os.getuid()}")
+os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import matplotlib
 
@@ -55,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Penalty per missed GT instance (num_gt - num_matched). Default 1.0.",
     )
+    parser.add_argument(
+        "--false-positive-penalty",
+        type=float,
+        default=0.25,
+        help="Penalty per unmatched prediction (num_pred - num_matched). Default 0.25.",
+    )
     return parser.parse_args()
 
 
@@ -73,15 +86,24 @@ def read_per_image(csv_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def compose_rewards(rows: list[dict[str, Any]], miss_penalty: float) -> list[dict[str, Any]]:
+def compose_rewards(
+    rows: list[dict[str, Any]],
+    miss_penalty: float,
+    false_positive_penalty: float,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         if r["num_gt"] == 0:
             continue
         matched_mean = r["mean_reward_matched"]
         missed = r["num_gt"] - r["num_matched"]
-        final = matched_mean - miss_penalty * missed
-        final_norm = matched_mean - (missed / r["num_gt"])
+        false_positive = max(r["num_pred"] - r["num_matched"], 0)
+        final = matched_mean - miss_penalty * missed - false_positive_penalty * false_positive
+        final_norm = (
+            matched_mean
+            - miss_penalty * missed / r["num_gt"]
+            - false_positive_penalty * false_positive / r["num_gt"]
+        )
         out.append(
             {
                 "chunk": r["chunk"],
@@ -90,6 +112,7 @@ def compose_rewards(rows: list[dict[str, Any]], miss_penalty: float) -> list[dic
                 "num_pred": r["num_pred"],
                 "num_matched": r["num_matched"],
                 "missed": missed,
+                "false_positive": false_positive,
                 "matched_mean_reward": matched_mean,
                 "final_reward": final,
                 "final_reward_norm": final_norm,
@@ -134,18 +157,24 @@ def bucket_by_gt(rows: list[dict[str, Any]], col: str) -> dict[str, dict[str, fl
     return out
 
 
-def make_plots(rows: list[dict[str, Any]], out_dir: Path, miss_penalty: float) -> None:
+def make_plots(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    miss_penalty: float,
+    false_positive_penalty: float,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     finals = np.array([r["final_reward"] for r in rows])
     finals_norm = np.array([r["final_reward_norm"] for r in rows])
     matched_means = np.array([r["matched_mean_reward"] for r in rows])
     missed = np.array([r["missed"] for r in rows])
+    false_positive = np.array([r["false_positive"] for r in rows])
     num_gt = np.array([r["num_gt"] for r in rows])
     num_matched = np.array([r["num_matched"] for r in rows])
     det_recall = np.array([r["detection_recall"] for r in rows])
 
-    # 1) Histograms (3 panels in one figure)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    # 1) Histograms (4 panels in one figure)
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4.2))
     axes[0].hist(matched_means, bins=30, color="#3aa75d", edgecolor="black", alpha=0.85)
     axes[0].set_title("matched_mean_reward\n(positive component)")
     axes[0].set_xlabel("reward")
@@ -161,16 +190,38 @@ def make_plots(rows: list[dict[str, Any]], out_dir: Path, miss_penalty: float) -
     axes[1].axvline(missed.mean(), color="black", linestyle="--", linewidth=1, label=f"mean={missed.mean():.2f}")
     axes[1].legend()
 
-    axes[2].hist(finals, bins=40, color="#3b78c6", edgecolor="black", alpha=0.85)
-    axes[2].set_title("final_reward\n(matched_mean - penalty × missed)")
-    axes[2].set_xlabel("reward")
+    axes[2].hist(
+        false_positive,
+        bins=range(int(false_positive.min()), int(false_positive.max()) + 2),
+        color="#d69445",
+        edgecolor="black",
+        alpha=0.85,
+    )
+    axes[2].set_title(f"false positives\npenalty/each = {false_positive_penalty}")
+    axes[2].set_xlabel("# false positives")
     axes[2].set_ylabel("# images")
-    axes[2].axvline(finals.mean(), color="black", linestyle="--", linewidth=1, label=f"mean={finals.mean():.3f}")
-    axes[2].axvline(0.0, color="red", linestyle=":", linewidth=1, label="r=0")
+    axes[2].axvline(
+        false_positive.mean(),
+        color="black",
+        linestyle="--",
+        linewidth=1,
+        label=f"mean={false_positive.mean():.2f}",
+    )
     axes[2].legend()
 
+    axes[3].hist(finals_norm, bins=40, color="#3b78c6", edgecolor="black", alpha=0.85)
+    axes[3].set_title("final_reward_norm\n(training reward)")
+    axes[3].set_xlabel("reward")
+    axes[3].set_ylabel("# images")
+    axes[3].axvline(finals_norm.mean(), color="black", linestyle="--", linewidth=1, label=f"mean={finals_norm.mean():.3f}")
+    axes[3].axvline(0.0, color="red", linestyle=":", linewidth=1, label="r=0")
+    axes[3].legend()
+
     fig.suptitle(
-        f"Per-image reward components  (N={len(rows)} images,  miss_penalty={miss_penalty})",
+        (
+            f"Per-image reward components  (N={len(rows)} images, "
+            f"miss_penalty={miss_penalty}, false_positive_penalty={false_positive_penalty})"
+        ),
         fontsize=12,
     )
     fig.tight_layout()
@@ -180,7 +231,9 @@ def make_plots(rows: list[dict[str, Any]], out_dir: Path, miss_penalty: float) -
     # 2) Final-reward and normalized comparison
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
     axes[0].hist(finals, bins=40, color="#3b78c6", edgecolor="black", alpha=0.85)
-    axes[0].set_title(f"final_reward = matched_mean - {miss_penalty} × missed")
+    axes[0].set_title(
+        f"final_reward = matched_mean - {miss_penalty} x missed - {false_positive_penalty} x false_positive"
+    )
     axes[0].set_xlabel("reward")
     axes[0].set_ylabel("# images")
     axes[0].axvline(finals.mean(), color="black", linestyle="--", linewidth=1, label=f"mean={finals.mean():.3f}")
@@ -188,7 +241,9 @@ def make_plots(rows: list[dict[str, Any]], out_dir: Path, miss_penalty: float) -
     axes[0].legend()
 
     axes[1].hist(finals_norm, bins=40, color="#7a59c0", edgecolor="black", alpha=0.85)
-    axes[1].set_title("final_reward_norm = matched_mean - missed / num_gt\n(bounded in [-1, 1])")
+    axes[1].set_title(
+        "final_reward_norm = matched_mean - penalties / num_gt\n(training reward variant)"
+    )
     axes[1].set_xlabel("reward")
     axes[1].set_ylabel("# images")
     axes[1].axvline(finals_norm.mean(), color="black", linestyle="--", linewidth=1, label=f"mean={finals_norm.mean():.3f}")
@@ -258,33 +313,40 @@ def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rows = read_per_image(args.per_image_csv)
-    composed = compose_rewards(rows, args.miss_penalty)
+    composed = compose_rewards(rows, args.miss_penalty, args.false_positive_penalty)
 
     finals = [r["final_reward"] for r in composed]
     finals_norm = [r["final_reward_norm"] for r in composed]
     matched_means = [r["matched_mean_reward"] for r in composed]
     missed = [r["missed"] for r in composed]
+    false_positive = [r["false_positive"] for r in composed]
 
     summary = {
         "input_csv": str(args.per_image_csv),
         "num_images_with_gt": len(composed),
         "miss_penalty": args.miss_penalty,
+        "false_positive_penalty": args.false_positive_penalty,
         "reward_definition": (
             "final_reward = mean_{matched pairs}(max(1 - lev / len(gt_text), 0)) "
-            f"- {args.miss_penalty} * (num_gt - num_matched)"
+            f"- {args.miss_penalty} * (num_gt - num_matched) "
+            f"- {args.false_positive_penalty} * max(num_pred - num_matched, 0)"
         ),
         "reward_definition_norm": (
-            "final_reward_norm = matched_mean_reward - (num_gt - num_matched) / num_gt"
+            "final_reward_norm = matched_mean_reward "
+            f"- {args.miss_penalty} * (num_gt - num_matched) / num_gt "
+            f"- {args.false_positive_penalty} * max(num_pred - num_matched, 0) / num_gt"
         ),
         "matched_mean_reward": describe(matched_means),
         "missed_count": describe(missed),
+        "false_positive_count": describe(false_positive),
         "final_reward": describe(finals),
         "final_reward_norm": describe(finals_norm),
-        "frac_final_positive": float(np.mean(np.array(finals) > 0)) if finals else 0.0,
-        "frac_final_zero": float(np.mean(np.array(finals) == 0)) if finals else 0.0,
-        "frac_final_negative": float(np.mean(np.array(finals) < 0)) if finals else 0.0,
+        "frac_final_norm_positive": float(np.mean(np.array(finals_norm) > 0)) if finals_norm else 0.0,
+        "frac_final_norm_zero": float(np.mean(np.array(finals_norm) == 0)) if finals_norm else 0.0,
+        "frac_final_norm_negative": float(np.mean(np.array(finals_norm) < 0)) if finals_norm else 0.0,
         "buckets_by_num_gt": {
             "final_reward": bucket_by_gt(composed, "final_reward"),
+            "final_reward_norm": bucket_by_gt(composed, "final_reward_norm"),
             "matched_mean_reward": bucket_by_gt(composed, "matched_mean_reward"),
             "detection_recall": bucket_by_gt(composed, "detection_recall"),
         },
@@ -293,12 +355,17 @@ def main() -> None:
     write_csv(args.out_dir / "per_image_reward.csv", composed)
     (args.out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    make_plots(composed, args.out_dir, args.miss_penalty)
+    make_plots(composed, args.out_dir, args.miss_penalty, args.false_positive_penalty)
 
     print(f"N images with GT: {len(composed)}")
     print(f"final_reward      mean={summary['final_reward']['mean']:.3f}  median={summary['final_reward']['median']:.3f}  range=[{summary['final_reward']['min']:.2f}, {summary['final_reward']['max']:.2f}]")
     print(f"final_reward_norm mean={summary['final_reward_norm']['mean']:.3f}  median={summary['final_reward_norm']['median']:.3f}  range=[{summary['final_reward_norm']['min']:.2f}, {summary['final_reward_norm']['max']:.2f}]")
-    print(f"fraction positive / zero / negative: {summary['frac_final_positive']:.2%} / {summary['frac_final_zero']:.2%} / {summary['frac_final_negative']:.2%}")
+    print(
+        "final_reward_norm positive / zero / negative: "
+        f"{summary['frac_final_norm_positive']:.2%} / "
+        f"{summary['frac_final_norm_zero']:.2%} / "
+        f"{summary['frac_final_norm_negative']:.2%}"
+    )
     print(f"Output: {args.out_dir}")
 
 

@@ -61,7 +61,7 @@ echo "Host: $(hostname)"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 
 cd "${ROOT_DIR}"
-"${PYTHON_BIN}" "${TAIRL_DIR}/train_ddpo_lora.py" \
+"${PYTHON_BIN}" "${TAIRL_DIR}/train_grpo_ddpo_lora.py" \
   --config "${CONFIG}" \
   "train.output_dir=${OUT_DIR}" \
   "reward.work_dir=${OUT_DIR}/reward_work" \

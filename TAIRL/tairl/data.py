@@ -238,6 +238,8 @@ class SATextParquetDataset(Dataset):
 
         if lq.size != (self.image_size, self.image_size):
             lq = lq.resize((self.image_size, self.image_size), Image.BICUBIC)
+        if hq.size != (self.image_size, self.image_size):
+            hq = hq.resize((self.image_size, self.image_size), Image.BICUBIC)
 
         texts = [str(t) for t in (row.get("text") or [])]
         instances: list[TextInstance] = []
@@ -249,6 +251,7 @@ class SATextParquetDataset(Dataset):
         return {
             "image_id": image_id,
             "lq": TF.to_tensor(lq),
+            "hq": TF.to_tensor(hq),
             "gt_instances": instances,
             "prompt": _build_prompt(texts, self.prompt_mode, self.fixed_prompt),
             "negative_prompt": self.negative_prompt,
@@ -259,6 +262,7 @@ def collate_sa_text(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "image_ids": [item["image_id"] for item in batch],
         "lq": torch.stack([item["lq"] for item in batch], dim=0),
+        "hq": torch.stack([item["hq"] for item in batch], dim=0),
         "gt_instances": [item["gt_instances"] for item in batch],
         "prompts": [item["prompt"] for item in batch],
         "negative_prompts": [item["negative_prompt"] for item in batch],

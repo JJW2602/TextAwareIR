@@ -160,7 +160,7 @@ Stage 이름은 `main_pipeline.py:36-40` 의 `valid_stages` 리스트 참고.
 
 ## 3. TAIRL — RL Fine-tuning (DDPO / GRPO + LoRA)
 
-DiffBIR controlnet에 **LoRA**를 주입하고, **Bridge spotter 기반 OCR reward**로 DDPO 또는 GRPO로 fine-tuning. 단일 진입점 `TAIRL/train_ddpo_lora.py`가 `train.algorithm` 스위치로 두 알고리즘을 처리합니다.
+DiffBIR controlnet에 **LoRA**를 주입하고, **Bridge spotter 기반 OCR reward**로 DDPO 또는 GRPO로 fine-tuning. 단일 진입점 `TAIRL/train_grpo_ddpo_lora.py`가 `train.algorithm` 스위치로 두 알고리즘을 처리합니다.
 
 ### Reward 정의
 
@@ -191,7 +191,7 @@ config 의 `reward.bridge_env_python` 가 subprocess 호출 시 사용되는 두
 
 ```
 TAIRL/
-├── train_ddpo_lora.py        # 진입점 (ddpo / grpo 둘 다)
+├── train_grpo_ddpo_lora.py   # 진입점 (grpo / ddpo 둘 다)
 ├── configs/
 │   ├── ddpo_lora.yaml         # DDPO baseline
 │   ├── grpo_lora_g6.yaml      # GRPO (group_size=6)

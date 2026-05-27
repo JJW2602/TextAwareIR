@@ -32,6 +32,7 @@ TAIR_INFER_CONFIG="${TAIR_INFER_CONFIG:-${TAIR_DIR}/configs/infer/infer_terediff
 TAIR_CONFIG_TESTR="${TAIR_CONFIG_TESTR:-${TAIR_DIR}/testr/configs/TESTR/TESTR_R_50_Polygon.yaml}"
 TAIR_STEPS="${TAIR_STEPS:-50}"
 MISS_PENALTY="${MISS_PENALTY:-1.0}"
+FALSE_POSITIVE_PENALTY="${FALSE_POSITIVE_PENALTY:-0.25}"
 LOG_STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)_$$}"
 
 LQ_ROOT="${RUN_ROOT}/inputs/lq${LEVEL}"
@@ -180,7 +181,16 @@ run_reward_eval() {
   "${DIFFBIR_PYTHON_BIN}" "${DIFFBIR_SLURM_DIR}/helpers/compute_image_reward.py" \
     --per-image-csv "${out_dir}/per_image.csv" \
     --out-dir "${out_dir}/per_image_reward" \
-    --miss-penalty "${MISS_PENALTY}"
+    --miss-penalty "${MISS_PENALTY}" \
+    --false-positive-penalty "${FALSE_POSITIVE_PENALTY}"
+}
+
+run_reward_comparison_plot() {
+  "${DIFFBIR_PYTHON_BIN}" "${DIFFBIR_SLURM_DIR}/helpers/plot_reward_comparison.py" \
+    --tair-csv "${EVAL_ROOT}/tair/per_image_reward/per_image_reward.csv" \
+    --diffbir-csv "${EVAL_ROOT}/diffbir/per_image_reward/per_image_reward.csv" \
+    --out-dir "${EVAL_ROOT}/reward_comparison" \
+    --reward-column final_reward_norm
 }
 
 resolve_gpu_ids
@@ -217,6 +227,8 @@ if [[ -d "${DIFFBIR_RESULTS_ROOT}/chunk_0" ]]; then
     "diffbir" \
     "${DIFFBIR_RESULTS_ROOT}" \
     "${DIFFBIR_RESULTS_ROOT}/text_annotations/{chunk}/pipeline/bridge_filtered.json"
+  echo "Creating TAIR/DiffBIR reward comparison plots"
+  run_reward_comparison_plot
 else
   echo "Skipping DiffBIR reward evaluation; missing ${DIFFBIR_RESULTS_ROOT}/chunk_0"
 fi

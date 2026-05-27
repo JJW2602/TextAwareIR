@@ -275,7 +275,9 @@ class BridgeReward:
         ]
         rewards = []
         for detail in details:
-            if self.variant == "final_reward":
+            if self.variant == "matched_mean_reward":
+                rewards.append(detail.matched_mean_reward)
+            elif self.variant == "final_reward":
                 rewards.append(detail.final_reward)
             elif self.variant == "final_reward_norm":
                 rewards.append(detail.final_reward_norm)
@@ -315,7 +317,7 @@ class ConstantReward:
                 num_matched=0,
                 missed=len(gt),
                 false_positive=0,
-                matched_mean_reward=0.0,
+                matched_mean_reward=self.value,
                 final_reward=self.value,
                 final_reward_norm=self.value,
                 mean_iou_matched=0.0,

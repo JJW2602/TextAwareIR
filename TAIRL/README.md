@@ -41,6 +41,8 @@ final_reward_norm = matched_mean_reward
                     - false_positive_penalty * false_positive / max(num_gt, 1)
 ```
 
+Use `reward.variant=matched_mean_reward` to train only on the IoU-matched text similarity term, with no missed-text or false-positive penalty in the reward.
+
 The default search uses `final_reward_norm` because it is less dominated by images with many text boxes. Default penalties are `miss_penalty=1.0` and `false_positive_penalty=0.25`: missed GT text is weighted more strongly, while unmatched detections are penalized more softly to discourage over-detection without suppressing valid text recovery too early.
 
 ## Hyperparameter Search

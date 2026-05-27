@@ -45,11 +45,13 @@ reward:
   config: /scratch2/james2602/TextAwareIR/Slurm/Baselines/DiffBIR/helpers/sa_text_annotation_config.yaml
   pipeline_root: /scratch2/james2602/TextAwareIR/Dataset_pipeline/SA-Text_Dataset
   bridge_env_python: /home/james2602/miniconda3/envs/dataset_curation/bin/python
-  work_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g6_reward_work
+  work_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g8_reward_work
   keep_images_every: 25
   constant_value: 0.0
   clip_min: -2.0
   clip_max: 2.0
+  psnr_weight: 0.0
+  psnr_norm_denominator: 40.0
 
 ddpo:
   ppo_epochs: 1
@@ -62,8 +64,8 @@ ddpo:
   reward_scale: 1.0
 
 grpo:
-  group_size: 6
-  generation_microbatch: 1
+  group_size: 8
+  generation_microbatch: 8
   ppo_epochs: 1
   clip_range: 0.1
   kl_coef: 0.02
@@ -83,23 +85,24 @@ wandb:
     - diffbir
     - lora
     - bridge_reward
-  log_images_every: 5
-  num_log_images: 4
-  log_tables_every: 5
+  log_images_every: 1
+  num_log_images: 8
+  log_tables_every: 1
 
 train:
   algorithm: grpo
-  output_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g6/debug
+  output_dir: /scratch2/james2602/TextAwareIR/Results/TAIRL/grpo_lora_g8/debug
   seed: 231
   batch_size: 1
   num_workers: 0
-  train_steps: 50
+  train_steps: 10000
   learning_rate: 3.0e-5
   adam_beta1: 0.9
   adam_beta2: 0.999
   weight_decay: 0.0
   max_grad_norm: 1.0
   precision: fp16
-  log_every: 1
-  ckpt_every: 25
-  progress: false
+  log_every: 10
+  ckpt_every: 500
+  progress: true
+  sample_progress: false
