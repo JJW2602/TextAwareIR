@@ -8,6 +8,10 @@ import torch
 from torch import nn
 
 
+def _module_weight_device(module: nn.Module) -> torch.device:
+    return next(module.parameters()).device
+
+
 class LoRALinear(nn.Module):
     def __init__(self, base: nn.Linear, rank: int, alpha: float, dropout: float) -> None:
         super().__init__()
@@ -18,6 +22,9 @@ class LoRALinear(nn.Module):
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.lora_down = nn.Linear(base.in_features, rank, bias=False)
         self.lora_up = nn.Linear(rank, base.out_features, bias=False)
+        # Keep trainable adapter weights fp32 for AMP optimizer stability.
+        self.lora_down.to(device=_module_weight_device(base), dtype=torch.float32)
+        self.lora_up.to(device=_module_weight_device(base), dtype=torch.float32)
         nn.init.normal_(self.lora_down.weight, std=1.0 / rank)
         nn.init.zeros_(self.lora_up.weight)
         for p in self.base.parameters():
@@ -26,7 +33,10 @@ class LoRALinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.enabled:
             return self.base(x)
-        return self.base(x) + self.lora_up(self.lora_down(self.dropout(x))) * self.scale
+        base_out = self.base(x)
+        lora_in = self.dropout(x).to(dtype=self.lora_down.weight.dtype)
+        lora_out = self.lora_up(self.lora_down(lora_in)) * self.scale
+        return base_out + lora_out.to(dtype=base_out.dtype)
 
 
 class LoRAConv2d1x1(nn.Module):
@@ -41,6 +51,9 @@ class LoRAConv2d1x1(nn.Module):
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
         self.lora_down = nn.Conv2d(base.in_channels, rank, kernel_size=1, bias=False)
         self.lora_up = nn.Conv2d(rank, base.out_channels, kernel_size=1, bias=False)
+        # Keep trainable adapter weights fp32 for AMP optimizer stability.
+        self.lora_down.to(device=_module_weight_device(base), dtype=torch.float32)
+        self.lora_up.to(device=_module_weight_device(base), dtype=torch.float32)
         nn.init.normal_(self.lora_down.weight, std=1.0 / rank)
         nn.init.zeros_(self.lora_up.weight)
         for p in self.base.parameters():
@@ -49,7 +62,10 @@ class LoRAConv2d1x1(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.enabled:
             return self.base(x)
-        return self.base(x) + self.lora_up(self.lora_down(self.dropout(x))) * self.scale
+        base_out = self.base(x)
+        lora_in = self.dropout(x).to(dtype=self.lora_down.weight.dtype)
+        lora_out = self.lora_up(self.lora_down(lora_in)) * self.scale
+        return base_out + lora_out.to(dtype=base_out.dtype)
 
 
 @dataclass(frozen=True)

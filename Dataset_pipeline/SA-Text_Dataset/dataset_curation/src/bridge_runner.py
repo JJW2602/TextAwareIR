@@ -44,11 +44,20 @@ def run_bridge(config, input_dir, output_dir, stage1=True):
     cmd = [str(c) for c in cmd]
 
     logging.info(f"Command: {shlex.join(cmd)}") 
+    env = os.environ.copy()
+    pythonpath_parts = [
+        bridge_repo_dir,
+        os.path.join(bridge_repo_dir, "detectron2"),
+    ]
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        pythonpath_parts.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     try:
         result = subprocess.run(
             cmd, cwd=bridge_repo_dir, check=True, capture_output=True,
-            text=True, encoding='utf-8'
+            text=True, encoding='utf-8', env=env
         )
         # Only log stdout/stderr if there's an error or if debug level is enabled
         if result.returncode != 0 or logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -77,6 +86,14 @@ def run_bridge(config, input_dir, output_dir, stage1=True):
         logging.error(f"Error: Command '{cmd[0]}' not found. Check 'bridge_env_python' in config ('{python_cmd_str}') or PATH.")
         return None
     except subprocess.CalledProcessError as e:
+        time.sleep(0.5)
+        if os.path.exists(output_json_path):
+            logging.warning(
+                "Bridge exited with return code %s, but wrote %s; using it.",
+                e.returncode,
+                output_json_path,
+            )
+            return output_json_path
         logging.error(f"Bridge execution failed with return code {e.returncode}")
         logging.error(f"Stderr:\n{e.stderr}") # Keep error details
         logging.error(f"Stdout:\n{e.stdout}") # Keep error details

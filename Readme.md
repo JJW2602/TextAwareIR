@@ -43,6 +43,62 @@ TextAwareIR/
 
 > 환경 위치: `/home/james2602/miniconda3/envs/{diffbir,diffbir_bw,dataset_curation,tair}`
 
+### DiffBIR env 셋업 (최초 1회)
+
+`DiffBIR/README.md`의 기본 설치는 순수 DiffBIR inference 기준입니다. 이 repo에서는 SA-Text parquet helper, reward plot, TAIRL wandb logging까지 같은 `diffbir` env에서 돌리므로 몇 가지 패키지를 추가로 설치합니다.
+
+Ampere/Ada 계열 GPU(A100, RTX 3090/4090, A6000 등)는 upstream requirements를 그대로 쓰는 `diffbir` env를 사용합니다.
+
+```bash
+cd /scratch2/james2602/TextAwareIR
+
+conda create -n diffbir python=3.10 -y
+conda activate diffbir
+python -m pip install --upgrade pip
+
+# DiffBIR upstream dependency set: torch 2.2.2 + cu118 + xformers
+python -m pip install -r DiffBIR/requirements.txt
+
+# TextAwareIR 추가 의존성
+python -m pip install hydra-core pyarrow pyyaml wandb matplotlib tqdm
+```
+
+Blackwell 계열 GPU(RTX PRO 6000, sm_120)는 `DiffBIR/requirements.txt`의 `torch==2.2.2+cu118`, `xformers==0.0.25.post1+cu118`를 그대로 쓰면 커널 호환 문제가 납니다. 이 경우 `diffbir_bw` env에서 torch cu128을 먼저 설치하고, torch/xformers pin을 제외한 나머지 requirements만 설치합니다.
+
+```bash
+cd /scratch2/james2602/TextAwareIR
+
+conda create -n diffbir_bw python=3.10 -y
+conda activate diffbir_bw
+python -m pip install --upgrade pip
+
+python -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+grep -Ev '^(--extra-index-url|torch==|torchvision==|torchaudio==|xformers==)' \
+    DiffBIR/requirements.txt > /tmp/diffbir_bw_requirements.txt
+python -m pip install -r /tmp/diffbir_bw_requirements.txt
+python -m pip install hydra-core pyarrow pyyaml wandb matplotlib tqdm
+```
+
+간단 확인:
+
+```bash
+python - <<'PY'
+import torch, hydra, pyarrow, yaml
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("cuda available", torch.cuda.is_available())
+PY
+```
+
+TAIRL 학습 config는 아래 weight 경로를 참조합니다. DiffBIR inference는 일부 weight를 자동 다운로드하지만, TAIRL은 config의 파일명이 정확히 있어야 합니다.
+
+```text
+DiffBIR/weights/sd2.1-base-zsnr-laionaes5.ckpt
+DiffBIR/weights/DiffBIR_v2.1.pt
+DiffBIR/weights/realesrgan_s4_swinir_100k.pth
+```
+
 ---
 
 ## 1. DiffBIR Inference

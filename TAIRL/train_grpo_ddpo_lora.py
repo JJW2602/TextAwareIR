@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import gc
 import json
 import math
 import os
@@ -17,6 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
+from PIL import Image, ImageDraw
 from torch.utils.data import DataLoader
 
 
@@ -50,6 +53,12 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def release_cuda_cache(device: torch.device) -> None:
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def load_config(path: Path, overrides: list[str]) -> Any:
@@ -201,7 +210,7 @@ def parameter_l2_norm(params: list[torch.nn.Parameter]) -> float:
     return math.sqrt(total)
 
 
-def make_progress_bar(enabled: bool, total: int, desc: str) -> Any | None:
+def make_progress_bar(enabled: bool, total: int, desc: str, initial: int = 0) -> Any | None:
     if not enabled:
         return None
     try:
@@ -209,7 +218,7 @@ def make_progress_bar(enabled: bool, total: int, desc: str) -> Any | None:
     except ImportError:
         print("tqdm is not installed; source-image progress is disabled.")
         return None
-    return tqdm(total=total, desc=desc, unit="img", dynamic_ncols=True)
+    return tqdm(total=total, initial=initial, desc=desc, unit="img", dynamic_ncols=True)
 
 
 def wandb_image_payload(
@@ -291,15 +300,18 @@ def log_wandb_step(
         "train/reward_seconds": metric["reward_seconds"],
         "train/update_seconds": metric["update_seconds"],
         "train/images_per_update": metric["images_per_update"],
-        "rl/loss": metric["loss"],
-        "rl/policy_loss": metric["policy_loss"],
-        "rl/reference_kl": metric["reference_kl"],
-        "rl/approx_kl_old_new": metric["approx_kl"],
-        "rl/clip_frac": metric["clip_frac"],
-        "rl/ratio_mean": metric["ratio_mean"],
-        "rl/grad_norm": metric["grad_norm"],
-        "rl/lora_param_l2_norm": metric["lora_param_l2_norm"],
-        "rl/kl_coef": metric["kl_coef"],
+        "train/reward_mean": metric["reward_mean"],
+        "train/reward_std": metric["reward_std"],
+        "loss/total_loss": metric.get("total_loss", metric["loss"]),
+        "loss/grpo_loss": metric.get("grpo_loss", metric["policy_loss"]),
+        "loss/kl_loss": metric.get("kl_loss", metric["kl_coef"] * metric["reference_kl"]),
+        "loss/reference_kl": metric["reference_kl"],
+        "loss/approx_kl_old_new": metric["approx_kl"],
+        "loss/clip_frac": metric["clip_frac"],
+        "loss/ratio_mean": metric["ratio_mean"],
+        "loss/grad_norm": metric["grad_norm"],
+        "loss/lora_param_l2_norm": metric["lora_param_l2_norm"],
+        "loss/kl_coef": metric["kl_coef"],
         "system/cuda_memory_allocated_gb": (
             torch.cuda.memory_allocated(device) / (1024**3) if device.type == "cuda" else 0.0
         ),
@@ -307,10 +319,6 @@ def log_wandb_step(
             torch.cuda.memory_reserved(device) / (1024**3) if device.type == "cuda" else 0.0
         ),
     }
-    payload.update(tensor_stats("reward", rewards))
-    payload.update(tensor_stats("rl/advantage", advantages))
-    payload.update(reward_detail_stats(details))
-
     for key in ("baseline", "group_reward_mean", "group_reward_std", "group_size"):
         if key in metric:
             payload[f"algorithm/{key}"] = metric[key]
@@ -325,21 +333,394 @@ def log_wandb_step(
         if key in metric:
             payload[f"reward_extra/{key}"] = metric[key]
 
-    if int(cfg.wandb.log_images_every) > 0 and (
-        step == 1 or step % int(cfg.wandb.log_images_every) == 0
-    ):
-        payload["samples/generated"] = wandb_image_payload(
-            images,
-            details,
-            rewards,
-            max_images=int(cfg.wandb.num_log_images),
-        )
-    if int(cfg.wandb.log_tables_every) > 0 and (
-        step == 1 or step % int(cfg.wandb.log_tables_every) == 0
-    ):
-        payload["samples/reward_details"] = wandb_reward_table(details, rewards)
-
     wandb_run.log(payload)
+
+
+def tensor_to_uint8_hwc(image: torch.Tensor) -> np.ndarray:
+    return (
+        image.detach()
+        .float()
+        .clamp(0, 1)
+        .cpu()
+        .mul(255)
+        .byte()
+        .permute(1, 2, 0)
+        .numpy()
+    )
+
+
+def match_targets_to_images(images: torch.Tensor, targets: torch.Tensor | None) -> torch.Tensor | None:
+    if targets is None:
+        return None
+    cpu_targets = targets.detach().float().cpu().clamp(0, 1)
+    if cpu_targets.shape[0] == 1 and images.shape[0] > 1:
+        cpu_targets = cpu_targets.repeat(images.shape[0], 1, 1, 1)
+    if cpu_targets.shape[0] != images.shape[0]:
+        raise ValueError(
+            f"Target batch size {cpu_targets.shape[0]} does not match images {images.shape[0]}."
+        )
+    if cpu_targets.shape[2:] != images.shape[2:]:
+        cpu_targets = F.interpolate(
+            cpu_targets,
+            size=images.shape[2:],
+            mode="bicubic",
+            antialias=True,
+        ).clamp(0, 1)
+    return cpu_targets
+
+
+@torch.no_grad()
+def image_psnr(images: torch.Tensor, targets: torch.Tensor | None) -> torch.Tensor:
+    cpu_images = images.detach().float().cpu().clamp(0, 1)
+    cpu_targets = match_targets_to_images(cpu_images, targets)
+    if cpu_targets is None:
+        return torch.full((cpu_images.shape[0],), float("nan"))
+    mse = (cpu_images - cpu_targets).pow(2).mean(dim=(1, 2, 3)).clamp_min(1.0e-10)
+    return 10.0 * torch.log10(1.0 / mse)
+
+
+@torch.no_grad()
+def image_ssim(images: torch.Tensor, targets: torch.Tensor | None) -> torch.Tensor:
+    cpu_images = images.detach().float().cpu().clamp(0, 1)
+    cpu_targets = match_targets_to_images(cpu_images, targets)
+    if cpu_targets is None:
+        return torch.full((cpu_images.shape[0],), float("nan"))
+    x = cpu_images.flatten(1)
+    y = cpu_targets.flatten(1)
+    mu_x = x.mean(dim=1)
+    mu_y = y.mean(dim=1)
+    var_x = (x - mu_x[:, None]).pow(2).mean(dim=1)
+    var_y = (y - mu_y[:, None]).pow(2).mean(dim=1)
+    cov_xy = ((x - mu_x[:, None]) * (y - mu_y[:, None])).mean(dim=1)
+    c1 = 0.01**2
+    c2 = 0.03**2
+    ssim = ((2 * mu_x * mu_y + c1) * (2 * cov_xy + c2)) / (
+        (mu_x.pow(2) + mu_y.pow(2) + c1) * (var_x + var_y + c2)
+    )
+    return ssim.clamp(-1.0, 1.0)
+
+
+def side_by_side_image(left: torch.Tensor, right: torch.Tensor) -> np.ndarray:
+    left_arr = tensor_to_uint8_hwc(left)
+    right_arr = tensor_to_uint8_hwc(right)
+    if left_arr.shape[:2] != right_arr.shape[:2]:
+        raise ValueError(f"Image shapes differ: {left_arr.shape} vs {right_arr.shape}")
+    divider = np.full((left_arr.shape[0], 4, 3), 255, dtype=np.uint8)
+    return np.concatenate([left_arr, divider, right_arr], axis=1)
+
+
+def selected_reward_from_detail(detail: Any, variant: str) -> float:
+    if variant == "matched_mean_reward":
+        return float(detail.matched_mean_reward)
+    if variant == "final_reward":
+        return float(detail.final_reward)
+    if variant == "final_reward_norm":
+        return float(detail.final_reward_norm)
+    raise ValueError(f"Unsupported reward variant: {variant}")
+
+
+def reward_table_row(
+    detail: Any,
+    selected_reward: float,
+    psnr_value: float,
+    ssim_value: float,
+    cfg: Any,
+) -> list[Any]:
+    base_reward = selected_reward_from_detail(detail, str(cfg.reward.variant))
+    return [
+        detail.image_id,
+        selected_reward,
+        base_reward,
+        selected_reward - base_reward,
+        psnr_value,
+        ssim_value,
+        detail.num_gt,
+        detail.num_pred,
+        detail.num_matched,
+        detail.missed,
+        detail.false_positive,
+        detail.matched_mean_reward,
+        detail.final_reward,
+        detail.final_reward_norm,
+        detail.mean_iou_matched,
+    ]
+
+
+def reward_table_columns() -> list[str]:
+    return [
+        "image_id",
+        "selected_reward",
+        "base_reward",
+        "psnr_bonus",
+        "psnr",
+        "ssim",
+        "num_gt",
+        "num_pred",
+        "num_matched",
+        "missed",
+        "false_positive",
+        "matched_mean_reward",
+        "final_reward",
+        "final_reward_norm",
+        "mean_iou_matched",
+    ]
+
+
+def safe_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+    return safe[:160] or "image"
+
+
+def save_tensor_png(image: torch.Tensor, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(tensor_to_uint8_hwc(image)).save(path)
+
+
+def draw_reward_bar_graph(labels: list[str], values: list[float], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width = max(760, 96 * max(len(values), 1))
+    height = 520
+    margin_left = 84
+    margin_right = 32
+    margin_top = 54
+    margin_bottom = 94
+    plot_w = width - margin_left - margin_right
+    plot_h = height - margin_top - margin_bottom
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((margin_left, 18), "Final selected reward by generated image", fill=(20, 20, 20))
+
+    finite_values = [value for value in values if math.isfinite(value)]
+    if not finite_values:
+        draw.text((margin_left, margin_top), "No rewards", fill=(80, 80, 80))
+        image.save(path)
+        return
+
+    vmin = min(0.0, min(finite_values))
+    vmax = max(0.0, max(finite_values))
+    if abs(vmax - vmin) < 1.0e-6:
+        vmin -= 1.0
+        vmax += 1.0
+    pad = 0.08 * (vmax - vmin)
+    vmin -= pad
+    vmax += pad
+
+    def y_for(value: float) -> float:
+        return margin_top + (vmax - value) / (vmax - vmin) * plot_h
+
+    x_axis = margin_left
+    y_zero = y_for(0.0)
+    draw.line((x_axis, margin_top, x_axis, margin_top + plot_h), fill=(80, 80, 80), width=1)
+    draw.line((x_axis, y_zero, margin_left + plot_w, y_zero), fill=(120, 120, 120), width=1)
+    draw.text((18, margin_top - 6), f"{vmax:.2f}", fill=(80, 80, 80))
+    draw.text((18, margin_top + plot_h - 8), f"{vmin:.2f}", fill=(80, 80, 80))
+    draw.text((28, y_zero - 8), "0", fill=(80, 80, 80))
+
+    count = len(values)
+    slot = plot_w / count
+    bar_w = max(18, min(54, slot * 0.62))
+    for index, (label, value) in enumerate(zip(labels, values)):
+        plot_value = value if math.isfinite(value) else 0.0
+        center = margin_left + slot * (index + 0.5)
+        x0 = center - bar_w / 2
+        x1 = center + bar_w / 2
+        y_value = y_for(plot_value)
+        y0 = min(y_zero, y_value)
+        y1 = max(y_zero, y_value)
+        color = (50, 111, 168) if plot_value >= 0 else (203, 82, 70)
+        draw.rectangle((x0, y0, x1, y1), fill=color)
+        value_y = y0 - 18 if plot_value >= 0 else y1 + 4
+        value_text = f"{value:.3f}" if math.isfinite(value) else "nan"
+        draw.text((x0 - 8, value_y), value_text, fill=(30, 30, 30))
+        draw.text((x0 + 2, margin_top + plot_h + 18), label, fill=(30, 30, 30))
+
+    image.save(path)
+
+
+def save_training_step_artifacts(
+    output_dir: Path,
+    cfg: Any,
+    step: int,
+    images: torch.Tensor,
+    targets: torch.Tensor | None,
+    rewards: torch.Tensor,
+    details: list[Any],
+) -> None:
+    every = int(cfg.reward.get("keep_images_every", 25))
+    if every <= 0 or step % every != 0:
+        return
+
+    cpu_images = images.detach().float().cpu().clamp(0, 1)
+    cpu_targets = match_targets_to_images(cpu_images, targets)
+    psnr_values = image_psnr(cpu_images, cpu_targets)
+    ssim_values = image_ssim(cpu_images, cpu_targets)
+    reward_values = rewards.detach().float().cpu()
+
+    step_dir = output_dir / "train_artifacts" / f"step_{step:07d}"
+    image_dir = step_dir / "inference"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    if cpu_targets is not None and cpu_targets.numel() > 0:
+        save_tensor_png(cpu_targets[0], step_dir / "gt.png")
+
+    rows: list[dict[str, Any]] = []
+    bar_labels: list[str] = []
+    bar_values: list[float] = []
+    for idx, (image, detail, reward) in enumerate(zip(cpu_images, details, reward_values)):
+        final_selected_reward = float(reward.item())
+        base_reward = selected_reward_from_detail(detail, str(cfg.reward.variant))
+        filename = f"{idx + 1:02d}_{safe_filename(detail.image_id)}.png"
+        save_tensor_png(image, image_dir / filename)
+        row = {
+            "group_index": idx + 1,
+            "image_id": detail.image_id,
+            "generated_path": str(Path("inference") / filename),
+            "final_selected_reward": final_selected_reward,
+            "base_reward_without_psnr_bonus": float(base_reward),
+            "psnr_bonus": float(final_selected_reward - base_reward),
+            "psnr": float(psnr_values[idx].item()),
+            "ssim": float(ssim_values[idx].item()),
+            "num_gt": int(detail.num_gt),
+            "num_pred": int(detail.num_pred),
+            "num_matched": int(detail.num_matched),
+            "missed": int(detail.missed),
+            "false_positive": int(detail.false_positive),
+            "matched_mean_reward": float(detail.matched_mean_reward),
+            "final_reward": float(detail.final_reward),
+            "final_reward_norm": float(detail.final_reward_norm),
+            "mean_iou_matched": float(detail.mean_iou_matched),
+        }
+        rows.append(row)
+        bar_labels.append(f"g{idx + 1}")
+        bar_values.append(final_selected_reward)
+
+    csv_path = step_dir / "rewards.csv"
+    fieldnames = list(rows[0].keys()) if rows else [
+        "group_index",
+        "image_id",
+        "generated_path",
+        "final_selected_reward",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    summary = {
+        "step": step,
+        "reward_variant": str(cfg.reward.variant),
+        "num_generated": len(rows),
+        "gt_path": "gt.png" if cpu_targets is not None and cpu_targets.numel() > 0 else None,
+        "final_selected_reward_mean": (
+            float(reward_values.mean().item()) if reward_values.numel() else float("nan")
+        ),
+        "final_selected_reward_min": (
+            float(reward_values.min().item()) if reward_values.numel() else float("nan")
+        ),
+        "final_selected_reward_max": (
+            float(reward_values.max().item()) if reward_values.numel() else float("nan")
+        ),
+        "rows": rows,
+    }
+    (step_dir / "rewards.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    draw_reward_bar_graph(bar_labels, bar_values, step_dir / "final_reward_bar.png")
+
+
+def save_evaluation_step_artifacts(
+    output_dir: Path,
+    cfg: Any,
+    step: int,
+    images: torch.Tensor,
+    targets: torch.Tensor | None,
+    rewards: torch.Tensor,
+    details: list[Any],
+) -> None:
+    cpu_images = images.detach().float().cpu().clamp(0, 1)
+    cpu_targets = match_targets_to_images(cpu_images, targets)
+    psnr_values = image_psnr(cpu_images, cpu_targets)
+    ssim_values = image_ssim(cpu_images, cpu_targets)
+    reward_values = rewards.detach().float().cpu()
+
+    step_dir = output_dir / "eval_artifacts" / f"step_{step:07d}"
+    image_dir = step_dir / "inference"
+    gt_dir = step_dir / "gt"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    if cpu_targets is not None:
+        gt_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+    bar_labels: list[str] = []
+    bar_values: list[float] = []
+    for idx, (image, detail, reward) in enumerate(zip(cpu_images, details, reward_values)):
+        final_selected_reward = float(reward.item())
+        base_reward = selected_reward_from_detail(detail, str(cfg.reward.variant))
+        filename = f"{idx + 1:02d}_{safe_filename(detail.image_id)}.png"
+        generated_path = Path("inference") / filename
+        gt_path = Path("gt") / filename
+        save_tensor_png(image, step_dir / generated_path)
+        if cpu_targets is not None:
+            save_tensor_png(cpu_targets[idx], step_dir / gt_path)
+        row = {
+            "eval_index": idx + 1,
+            "image_id": detail.image_id,
+            "generated_path": str(generated_path),
+            "gt_path": str(gt_path) if cpu_targets is not None else "",
+            "final_selected_reward": final_selected_reward,
+            "base_reward_without_psnr_bonus": float(base_reward),
+            "psnr_bonus": float(final_selected_reward - base_reward),
+            "psnr": float(psnr_values[idx].item()),
+            "ssim": float(ssim_values[idx].item()),
+            "num_gt": int(detail.num_gt),
+            "num_pred": int(detail.num_pred),
+            "num_matched": int(detail.num_matched),
+            "missed": int(detail.missed),
+            "false_positive": int(detail.false_positive),
+            "matched_mean_reward": float(detail.matched_mean_reward),
+            "final_reward": float(detail.final_reward),
+            "final_reward_norm": float(detail.final_reward_norm),
+            "mean_iou_matched": float(detail.mean_iou_matched),
+        }
+        rows.append(row)
+        bar_labels.append(f"e{idx + 1}")
+        bar_values.append(final_selected_reward)
+
+    csv_path = step_dir / "rewards.csv"
+    fieldnames = list(rows[0].keys()) if rows else [
+        "eval_index",
+        "image_id",
+        "generated_path",
+        "gt_path",
+        "final_selected_reward",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    summary = {
+        "step": step,
+        "reward_variant": str(cfg.reward.variant),
+        "num_eval_images": len(rows),
+        "final_selected_reward_mean": (
+            float(reward_values.mean().item()) if reward_values.numel() else float("nan")
+        ),
+        "final_selected_reward_min": (
+            float(reward_values.min().item()) if reward_values.numel() else float("nan")
+        ),
+        "final_selected_reward_max": (
+            float(reward_values.max().item()) if reward_values.numel() else float("nan")
+        ),
+        "rows": rows,
+    }
+    (step_dir / "rewards.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    draw_reward_bar_graph(bar_labels, bar_values, step_dir / "final_reward_bar.png")
 
 
 def autocast_context(device: torch.device, precision: str):
@@ -682,10 +1063,14 @@ def ppo_policy_loss(
     policy_loss = -(torch.minimum(unclipped, clipped) * mask).sum() / denom
     approx_kl = (0.5 * log_ratio.pow(2) * mask).sum() / denom
     reference_kl = (reference_kls.to(device) * mask).sum() / denom
-    loss = policy_loss + kl_coef * reference_kl
+    kl_loss = kl_coef * reference_kl
+    loss = policy_loss + kl_loss
     clip_frac = (((ratio - 1.0).abs() > clip_range).float() * mask).sum() / denom
     stats = {
         "policy_loss": float(policy_loss.detach().cpu().item()),
+        "grpo_loss": float(policy_loss.detach().cpu().item()),
+        "kl_loss": float(kl_loss.detach().cpu().item()),
+        "total_loss": float(loss.detach().cpu().item()),
         "approx_kl": float(approx_kl.detach().cpu().item()),
         "reference_kl": float(reference_kl.detach().cpu().item()),
         "clip_frac": float(clip_frac.detach().cpu().item()),
@@ -755,17 +1140,408 @@ def optimize_policy(
     return last_stats
 
 
-def save_checkpoint(path: Path, cldm: ControlLDM, optimizer: torch.optim.Optimizer, step: int, cfg: Any) -> None:
+def capture_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: Any) -> None:
+    if not isinstance(state, dict):
+        return
+    if "python" in state:
+        random.setstate(state["python"])
+    if "numpy" in state:
+        np.random.set_state(state["numpy"])
+    if "torch" in state:
+        torch.set_rng_state(state["torch"])
+    cuda_states = state.get("cuda")
+    if cuda_states is not None and torch.cuda.is_available():
+        for device_index, cuda_state in enumerate(cuda_states[: torch.cuda.device_count()]):
+            torch.cuda.set_rng_state(cuda_state, device_index)
+
+
+def save_checkpoint(
+    path: Path,
+    cldm: ControlLDM,
+    optimizer: torch.optim.Optimizer,
+    step: int,
+    cfg: Any,
+    scaler: Any | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "step": step,
-            "lora": lora_state_dict(cldm),
-            "optimizer": optimizer.state_dict(),
-            "config": OmegaConf.to_container(cfg, resolve=True),
-        },
-        path,
+    payload = {
+        "step": step,
+        "lora": lora_state_dict(cldm),
+        "optimizer": optimizer.state_dict(),
+        "config": OmegaConf.to_container(cfg, resolve=True),
+        "rng_state": capture_rng_state(),
+    }
+    if scaler is not None:
+        payload["scaler"] = scaler.state_dict()
+    torch.save(payload, path)
+
+
+def checkpoint_step_from_name(path: Path) -> int | None:
+    name = path.name
+    prefix = "lora_step_"
+    suffix = ".pt"
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        return None
+    try:
+        return int(name[len(prefix) : -len(suffix)])
+    except ValueError:
+        return None
+
+
+def find_latest_checkpoint(checkpoint_dir: Path) -> Path | None:
+    if not checkpoint_dir.is_dir():
+        return None
+    candidates: list[tuple[int, int, float, str, Path]] = []
+    for path in checkpoint_dir.glob("lora_step_*.pt"):
+        step = checkpoint_step_from_name(path)
+        if step is not None:
+            candidates.append((0, step, path.stat().st_mtime, str(path), path))
+    final_path = checkpoint_dir / "lora_final.pt"
+    if final_path.is_file():
+        candidates.append((1, 0, final_path.stat().st_mtime, str(final_path), final_path))
+    if not candidates:
+        return None
+    return max(candidates)[4]
+
+
+def resolve_resume_checkpoint(value: Any, output_dir: Path) -> Path | None:
+    value = maybe_null(value)
+    if value is None:
+        return None
+    token = str(value).strip()
+    if token.lower() in {"0", "false", "no", "off"}:
+        return None
+    if token.lower() in {"1", "true", "yes", "latest", "auto"}:
+        checkpoint = find_latest_checkpoint(output_dir / "checkpoints")
+        if checkpoint is None:
+            print(f"No checkpoint found in {output_dir / 'checkpoints'}; starting from scratch.")
+        return checkpoint
+    checkpoint = Path(os.path.expandvars(token)).expanduser()
+    if not checkpoint.is_absolute():
+        checkpoint = output_dir / checkpoint
+    return checkpoint
+
+
+def load_checkpoint(
+    path: Path,
+    cldm: ControlLDM,
+    optimizer: torch.optim.Optimizer,
+    scaler: Any | None,
+    device: torch.device,
+) -> int:
+    if not path.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+
+    lora_weights = checkpoint.get("lora")
+    if not isinstance(lora_weights, dict):
+        raise ValueError(f"Checkpoint has no LoRA weights: {path}")
+
+    model_state = cldm.state_dict()
+    expected_lora_keys = set(lora_state_dict(cldm).keys())
+    checkpoint_keys = set(lora_weights.keys())
+    missing = sorted(expected_lora_keys - checkpoint_keys)
+    unexpected = sorted(checkpoint_keys - expected_lora_keys)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"Checkpoint LoRA keys do not match current model. "
+            f"missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
+    for key, value in lora_weights.items():
+        current = model_state[key]
+        if tuple(current.shape) != tuple(value.shape):
+            raise RuntimeError(
+                f"Checkpoint tensor shape mismatch for {key}: "
+                f"checkpoint={tuple(value.shape)} current={tuple(current.shape)}"
+            )
+        current.copy_(value.to(device=current.device, dtype=current.dtype))
+
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    if scaler is not None and "scaler" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler"])
+    restore_rng_state(checkpoint.get("rng_state"))
+    step = int(checkpoint.get("step", 0))
+    print(f"Resumed checkpoint: {path} at step {step}")
+    return step
+
+
+def rotate_dataset_for_resume(dataset: SATextParquetDataset, consumed_samples: int) -> int:
+    if consumed_samples <= 0 or len(dataset) == 0:
+        return 0
+    offset = consumed_samples % len(dataset)
+    if offset == 0:
+        return 0
+    dataset.rows = dataset.rows[offset:] + dataset.rows[:offset]
+    return offset
+
+
+def build_dataset_from_section(section: Any, fallback: Any | None = None) -> SATextParquetDataset:
+    fallback = fallback or {}
+    return SATextParquetDataset(
+        parquet_path=section.get("parquet", fallback.get("parquet", None)),
+        manifest_path=section.get("manifest", fallback.get("manifest", None)),
+        level=int(section.get("level", fallback.get("level", 2))),
+        start=int(section.get("start", fallback.get("start", 0))),
+        max_samples=(
+            None
+            if section.get("max_samples", fallback.get("max_samples", None)) is None
+            else int(section.get("max_samples", fallback.get("max_samples", None)))
+        ),
+        image_size=int(section.get("image_size", fallback.get("image_size", 512))),
+        prompt_mode=str(section.get("prompt_mode", fallback.get("prompt_mode", "gt_text"))),
+        fixed_prompt=str(
+            section.get(
+                "fixed_prompt",
+                fallback.get("fixed_prompt", "A high-quality restored image with clear readable text."),
+            )
+        ),
+        negative_prompt=str(section.get("negative_prompt", fallback.get("negative_prompt", ""))),
     )
+
+
+def build_fixed_eval_batch(cfg: Any) -> tuple[dict[str, Any], str] | None:
+    eval_cfg = cfg.get("eval", {})
+    if not bool(eval_cfg.get("enabled", False)):
+        return None
+    num_images = int(eval_cfg.get("num_images", 5))
+    eval_section = OmegaConf.merge(
+        cfg.data,
+        OmegaConf.create(
+            {
+                "parquet": eval_cfg.get("parquet", cfg.data.get("parquet", None)),
+                "manifest": eval_cfg.get("manifest", None),
+                "level": eval_cfg.get("level", cfg.data.get("level", 2)),
+                "start": eval_cfg.get("start", 0),
+                "max_samples": eval_cfg.get("max_samples", num_images),
+                "image_size": eval_cfg.get("image_size", cfg.data.get("image_size", 512)),
+                "prompt_mode": eval_cfg.get("prompt_mode", cfg.data.get("prompt_mode", "gt_text")),
+                "fixed_prompt": eval_cfg.get("fixed_prompt", cfg.data.get("fixed_prompt", "")),
+                "negative_prompt": eval_cfg.get("negative_prompt", cfg.data.get("negative_prompt", "")),
+            }
+        ),
+    )
+    dataset = build_dataset_from_section(eval_section, cfg.data)
+    num_images = min(num_images, len(dataset))
+    if num_images <= 0:
+        return None
+    batch = collate_sa_text([dataset[index] for index in range(num_images)])
+    return batch, dataset.source_description
+
+
+def slice_collated_batch(batch: dict[str, Any], start: int, end: int) -> dict[str, Any]:
+    out = {
+        "image_ids": batch["image_ids"][start:end],
+        "lq": batch["lq"][start:end],
+        "hq": batch["hq"][start:end],
+        "gt_instances": batch["gt_instances"][start:end],
+        "prompts": batch["prompts"][start:end],
+        "negative_prompts": batch["negative_prompts"][start:end],
+    }
+    return out
+
+
+def log_wandb_evaluation(
+    wandb_run: Any,
+    cfg: Any,
+    step: int,
+    images: torch.Tensor,
+    targets: torch.Tensor | None,
+    rewards: torch.Tensor,
+    details: list[Any],
+    eval_state: dict[str, float],
+) -> None:
+    if wandb_run is None:
+        return
+
+    cpu_images = images.detach().float().cpu().clamp(0, 1)
+    cpu_targets = match_targets_to_images(cpu_images, targets)
+    psnr_values = image_psnr(cpu_images, cpu_targets)
+    ssim_values = image_ssim(cpu_images, cpu_targets)
+    reward_values = rewards.detach().float().cpu()
+
+    eval_state["reward_total"] = float(eval_state.get("reward_total", 0.0)) + float(
+        reward_values.sum().item()
+    )
+    eval_state["reward_count"] = float(eval_state.get("reward_count", 0.0)) + float(
+        reward_values.numel()
+    )
+    cumulative_mean = eval_state["reward_total"] / max(eval_state["reward_count"], 1.0)
+
+    log_visuals = bool(cfg.get("wandb", {}).get("log_visuals", True))
+    if log_visuals:
+        import wandb
+
+        table = wandb.Table(columns=["output_gt", *reward_table_columns()])
+    else:
+        table = None
+    payload: dict[str, Any] = {
+        "train/step": step,
+        "eval/reward_mean": float(reward_values.mean().item()),
+        "eval/reward_cumulative_mean": float(cumulative_mean),
+        "eval/psnr_mean": float(psnr_values.mean().item()),
+        "eval/ssim_mean": float(ssim_values.mean().item()),
+    }
+    for idx, (image, detail, reward) in enumerate(zip(cpu_images, details, reward_values), start=1):
+        gt_image = cpu_targets[idx - 1] if cpu_targets is not None else image
+        psnr_value = float(psnr_values[idx - 1].item())
+        ssim_value = float(ssim_values[idx - 1].item())
+        selected_reward = float(reward.item())
+        key = f"eval/{step}_{idx}"
+        side_by_side = side_by_side_image(image, gt_image)
+        payload[f"{key}_reward"] = selected_reward
+        payload[f"{key}_psnr"] = psnr_value
+        payload[f"{key}_ssim"] = ssim_value
+        payload[f"{key}_matched_mean_reward"] = float(detail.matched_mean_reward)
+        payload[f"{key}_final_reward"] = float(detail.final_reward)
+        payload[f"{key}_final_reward_norm"] = float(detail.final_reward_norm)
+        if log_visuals and table is not None:
+            payload[key] = wandb.Image(
+                side_by_side,
+                caption=(
+                    f"{detail.image_id} | output left, GT right | "
+                    f"reward={selected_reward:.4f} psnr={psnr_value:.2f} ssim={ssim_value:.4f}"
+                ),
+            )
+            table.add_data(
+                wandb.Image(side_by_side, caption=f"{detail.image_id} output | GT"),
+                *reward_table_row(detail, selected_reward, psnr_value, ssim_value, cfg),
+            )
+    if log_visuals and table is not None:
+        payload["eval/reward_table"] = table
+    wandb_run.log(payload)
+
+
+@torch.no_grad()
+def run_fixed_evaluation(
+    cldm: ControlLDM,
+    swinir: SwinIR,
+    diffusion: Diffusion,
+    sampler: DDPOSpacedSampler,
+    reward_fn: Any,
+    eval_batch: dict[str, Any] | None,
+    cfg: Any,
+    algo_cfg: Any,
+    device: torch.device,
+    step: int,
+    wandb_run: Any,
+    eval_state: dict[str, float],
+    eval_metrics_path: Path,
+    output_dir: Path,
+) -> None:
+    eval_cfg = cfg.get("eval", {})
+    every = int(eval_cfg.get("every", 0))
+    if eval_batch is None or every <= 0 or step % every != 0:
+        return
+
+    saved_rng = capture_rng_state()
+    was_training = cldm.controlnet.training
+    try:
+        release_cuda_cache(device)
+        seed_everything(int(eval_cfg.get("seed", int(cfg.train.seed) + 100_000)))
+        cldm.controlnet.eval()
+        batch_size = max(1, int(eval_cfg.get("batch_size", len(eval_batch["image_ids"]))))
+        all_images: list[torch.Tensor] = []
+        all_rewards: list[torch.Tensor] = []
+        all_details: list[Any] = []
+        all_targets: list[torch.Tensor] = []
+        for chunk_index, start in enumerate(range(0, len(eval_batch["image_ids"]), batch_size)):
+            end = min(start + batch_size, len(eval_batch["image_ids"]))
+            chunk = slice_collated_batch(eval_batch, start, end)
+            images, trajectory, cond, uncond, clean = rollout(
+                cldm,
+                swinir,
+                diffusion,
+                chunk,
+                sampler,
+                cfg,
+                device,
+                logprob_reduce=str(algo_cfg.logprob_reduce),
+            )
+            images_cpu = images.detach().cpu()
+            targets_cpu = chunk["hq"].detach().cpu() if "hq" in chunk else None
+            del images, trajectory, cond, uncond, clean
+            release_cuda_cache(device)
+
+            reward_step = step * 1000 + 999 + chunk_index
+            rewards_cpu, details = reward_fn(
+                chunk["image_ids"],
+                images_cpu,
+                chunk["gt_instances"],
+                reward_step,
+            )
+            rewards_cpu, _ = add_psnr_reward_bonus(
+                rewards_cpu,
+                images_cpu,
+                targets_cpu,
+                cfg,
+            )
+            all_images.append(images_cpu)
+            all_rewards.append(rewards_cpu.detach().cpu())
+            all_details.extend(details)
+            if targets_cpu is not None:
+                all_targets.append(targets_cpu)
+            release_cuda_cache(device)
+        images_cpu = torch.cat(all_images, dim=0)
+        rewards_cpu = torch.cat(all_rewards, dim=0)
+        targets_cpu = torch.cat(all_targets, dim=0) if all_targets else None
+        psnr_values = image_psnr(images_cpu, targets_cpu)
+        ssim_values = image_ssim(images_cpu, targets_cpu)
+        with eval_metrics_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "step": step,
+                        "reward_mean": float(rewards_cpu.mean().item()),
+                        "psnr_mean": float(psnr_values.mean().item()),
+                        "ssim_mean": float(ssim_values.mean().item()),
+                        "image_ids": [detail.image_id for detail in all_details],
+                        "rewards": [float(v) for v in rewards_cpu.tolist()],
+                        "psnr": [float(v) for v in psnr_values.tolist()],
+                        "ssim": [float(v) for v in ssim_values.tolist()],
+                        "details": [asdict(detail) for detail in all_details],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        log_wandb_evaluation(
+            wandb_run,
+            cfg,
+            step,
+            images_cpu,
+            targets_cpu,
+            rewards_cpu,
+            all_details,
+            eval_state,
+        )
+        save_evaluation_step_artifacts(
+            output_dir,
+            cfg,
+            step,
+            images_cpu,
+            targets_cpu,
+            rewards_cpu,
+            all_details,
+        )
+    finally:
+        if was_training:
+            cldm.controlnet.train()
+        release_cuda_cache(device)
+        restore_rng_state(saved_rng)
 
 
 def main() -> None:
@@ -786,29 +1562,17 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "resolved_config.yaml").write_text(OmegaConf.to_yaml(cfg), encoding="utf-8")
     metrics_path = output_dir / "metrics.jsonl"
+    eval_metrics_path = output_dir / "eval_metrics.jsonl"
     wandb_run = init_wandb(cfg, output_dir, algo)
 
-    dataset = SATextParquetDataset(
-        parquet_path=cfg.data.parquet,
-        manifest_path=cfg.data.get("manifest", None),
-        level=int(cfg.data.level),
-        start=int(cfg.data.start),
-        max_samples=None if cfg.data.max_samples is None else int(cfg.data.max_samples),
-        image_size=int(cfg.data.image_size),
-        prompt_mode=str(cfg.data.prompt_mode),
-        fixed_prompt=str(cfg.data.fixed_prompt),
-        negative_prompt=str(cfg.data.negative_prompt),
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=int(cfg.train.batch_size),
-        shuffle=True,
-        num_workers=int(cfg.train.num_workers),
-        pin_memory=True,
-        drop_last=True,
-        collate_fn=collate_sa_text,
-    )
+    dataset = build_dataset_from_section(cfg.data)
     print(f"Dataset: {len(dataset):,} samples from {dataset.source_description}")
+    eval_result = build_fixed_eval_batch(cfg)
+    if eval_result is None:
+        eval_batch = None
+    else:
+        eval_batch, eval_source = eval_result
+        print(f"Evaluation: {len(eval_batch['image_ids'])} fixed samples from {eval_source}")
 
     cldm, swinir, diffusion = load_diffbir(cfg, device)
     apply_lora(cldm, cfg)
@@ -822,6 +1586,33 @@ def main() -> None:
         weight_decay=float(cfg.train.weight_decay),
     )
     scaler = torch.cuda.amp.GradScaler(enabled=(cfg.train.precision == "fp16"))
+    resume_checkpoint = resolve_resume_checkpoint(
+        cfg.train.get("resume_from_checkpoint", None),
+        output_dir,
+    )
+    global_step = 0
+    if resume_checkpoint is not None:
+        global_step = load_checkpoint(resume_checkpoint, cldm, optimizer, scaler, device)
+    shuffle_data = bool(cfg.train.get("shuffle_data", True))
+    if not shuffle_data:
+        consumed_samples = global_step * int(cfg.train.batch_size)
+        dataset_offset = rotate_dataset_for_resume(dataset, consumed_samples)
+        if global_step > 0:
+            print(
+                f"Sequential data resume: skipped {consumed_samples} consumed samples "
+                f"(dataset offset {dataset_offset})."
+            )
+    elif global_step > 0:
+        print("Resuming with train.shuffle_data=true; dataset order is randomized.")
+    loader = DataLoader(
+        dataset,
+        batch_size=int(cfg.train.batch_size),
+        shuffle=shuffle_data,
+        num_workers=int(cfg.train.num_workers),
+        pin_memory=True,
+        drop_last=True,
+        collate_fn=collate_sa_text,
+    )
     reward_fn = build_reward(cfg)
     sampler = DDPOSpacedSampler(
         diffusion.betas,
@@ -829,12 +1620,13 @@ def main() -> None:
         rescale_cfg=bool(cfg.sample.rescale_cfg),
     )
     baseline = 0.0
-    global_step = 0
+    eval_state: dict[str, float] = {}
     train_steps = int(cfg.train.train_steps)
     progress_bar = make_progress_bar(
         enabled=bool(cfg.train.get("progress", False)),
         total=train_steps,
         desc=f"{algo.upper()} inference 0/{train_steps}",
+        initial=global_step,
     )
     print(f"Training algorithm: {algo}")
 
@@ -978,6 +1770,15 @@ def main() -> None:
                     images,
                     device,
                 )
+                save_training_step_artifacts(
+                    output_dir,
+                    cfg,
+                    global_step,
+                    images,
+                    batch.get("hq"),
+                    rewards_cpu,
+                    details,
+                )
 
                 if progress_bar is not None:
                     progress_bar.update(1)
@@ -994,14 +1795,42 @@ def main() -> None:
                         optimizer,
                         global_step,
                         cfg,
+                        scaler,
                     )
+
+                eval_cfg = cfg.get("eval", {})
+                eval_every = int(eval_cfg.get("every", 0))
+                should_eval = (
+                    eval_batch is not None
+                    and eval_every > 0
+                    and global_step % eval_every == 0
+                )
+                del images, trajectory, cond, uncond, advantages
+                if should_eval:
+                    release_cuda_cache(device)
+                run_fixed_evaluation(
+                    cldm,
+                    swinir,
+                    diffusion,
+                    sampler,
+                    reward_fn,
+                    eval_batch,
+                    cfg,
+                    algo_cfg,
+                    device,
+                    global_step,
+                    wandb_run,
+                    eval_state,
+                    eval_metrics_path,
+                    output_dir,
+                )
                 if global_step >= train_steps:
                     break
     finally:
         if progress_bar is not None:
             progress_bar.close()
 
-    save_checkpoint(output_dir / "checkpoints" / "lora_final.pt", cldm, optimizer, global_step, cfg)
+    save_checkpoint(output_dir / "checkpoints" / "lora_final.pt", cldm, optimizer, global_step, cfg, scaler)
     if wandb_run is not None:
         wandb_run.finish()
     print(f"Done. Output: {output_dir}")

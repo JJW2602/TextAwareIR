@@ -109,13 +109,22 @@ class SATextParquetDataset(Dataset):
             if parquet_path is None:
                 raise ValueError("Either parquet_path or manifest_path must be provided.")
             self.parquet_path = Path(parquet_path)
-            self.rows = self._load_parquet_rows(
-                pq=pq,
-                parquet_path=self.parquet_path,
-                level=level,
-                start=start,
-                max_samples=max_samples,
-            )
+            if self.parquet_path.is_dir():
+                self.rows = self._load_directory_rows(
+                    pq=pq,
+                    dataset_dir=self.parquet_path,
+                    level=level,
+                    start=start,
+                    max_samples=max_samples,
+                )
+            else:
+                self.rows = self._load_parquet_rows(
+                    pq=pq,
+                    parquet_path=self.parquet_path,
+                    level=level,
+                    start=start,
+                    max_samples=max_samples,
+                )
 
     @staticmethod
     def _image_columns(pq: Any, parquet_path: Path, level: int) -> tuple[str, str, list[str]]:
@@ -204,6 +213,52 @@ class SATextParquetDataset(Dataset):
                     "_columns": columns,
                 }
             )
+        return rows
+
+    @classmethod
+    def _load_directory_rows(
+        cls,
+        pq: Any,
+        dataset_dir: Path,
+        level: int,
+        start: int,
+        max_samples: int | None,
+    ) -> list[dict[str, Any]]:
+        data_dir = dataset_dir / "data" if (dataset_dir / "data").is_dir() else dataset_dir
+        shards = sorted(data_dir.glob("train-*.parquet"))
+        if not shards:
+            shards = sorted(data_dir.glob("test-*.parquet"))
+        if not shards:
+            shards = sorted(data_dir.glob("*.parquet"))
+        if not shards:
+            raise FileNotFoundError(f"No parquet shards found under {data_dir}")
+
+        rows: list[dict[str, Any]] = []
+        seen = 0
+        for parquet_path in shards:
+            lq_column, hq_column, columns = cls._image_columns(pq, parquet_path, level)
+            id_table = pq.read_table(parquet_path, columns=["id"])
+            ids = id_table.column("id").to_pylist()
+            for row_index, image_id in enumerate(ids):
+                if seen < start:
+                    seen += 1
+                    continue
+                if max_samples is not None and len(rows) >= max_samples:
+                    return rows
+                rows.append(
+                    {
+                        "id": str(image_id),
+                        "_manifest_parquet": str(parquet_path),
+                        "_manifest_row_index": row_index,
+                        "_lq_column": lq_column,
+                        "_hq_column": hq_column,
+                        "_columns": columns,
+                    }
+                )
+                seen += 1
+
+        if start >= seen:
+            raise ValueError(f"start={start} is outside dataset with {seen} rows")
         return rows
 
     def _materialize_manifest_row(self, row_ref: dict[str, Any]) -> dict[str, Any]:
