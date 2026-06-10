@@ -1,332 +1,577 @@
 # TextAwareIR
 
-Text-Aware Image Restoration 연구 모노레포. DiffBIR 기반 복원, SA-Text 데이터셋 큐레이션 파이프라인, OCR reward 기반 RL fine-tuning을 한 저장소에서 관리합니다.
+텍스트가 포함된 저화질 이미지를 복원하고 평가하기 위한 연구 모노레포입니다.
 
----
+- **TAIR / TeReDiff**: text-aware image restoration baseline
+- **DiffBIR**: diffusion-based blind image restoration baseline
+- **Dataset pipeline**: SA-1B 기반 SA-Text 큐레이션 및 OOD text 평가셋 생성
+- **TAIRL**: Bridge OCR reward를 이용한 DiffBIR ControlNet LoRA의 DDPO/GRPO fine-tuning
+
+> 이 저장소의 Slurm 스크립트와 YAML 설정은 기본적으로
+> `/scratch2/james2602/TextAwareIR` 및
+> `/home/james2602/miniconda3/envs/*` 경로를 사용합니다.
+> 다른 머신에서는 [Path Configuration](#path-configuration)을 먼저 확인하세요.
+
+## Contents
+
+- [Repository Layout](#repository-layout)
+- [Quick Start](#quick-start)
+- [Environment Setup](#environment-setup)
+- [Weights](#weights)
+- [Baseline Evaluation](#baseline-evaluation)
+- [Dataset Preparation](#dataset-preparation)
+- [TAIRL Training](#tairl-training)
+- [Outputs and Logs](#outputs-and-logs)
+- [Path Configuration](#path-configuration)
+- [Cluster Notes](#cluster-notes)
+- [Citation](#citation)
 
 ## Repository Layout
 
-```
+```text
 TextAwareIR/
-├── TAIR/                # TeReDiff / TAIR baseline 코드
-├── DiffBIR/             # DiffBIR baseline 코드
-├── TAIRL/               # TAIRL 코드 작업 공간
-├── Results/
-│   ├── Baselines/
-│   │   ├── TAIR/        # TAIR baseline 결과
-│   │   ├── DiffBIR/     # DiffBIR baseline 결과
-│   │   └── Compare/     # baseline 비교 eval / visualization
-│   └── TAIRL/           # TAIRL 결과
-├── Slurm/
-│   ├── Baselines/
-│   │   ├── TAIR/        # TAIR baseline 실행 스크립트
-│   │   └── DiffBIR/     # DiffBIR baseline 실행 스크립트
-│   └── TAIRL/           # TAIRL 실행 스크립트
+├── TAIR/                   # TeReDiff / TAIR baseline
+├── DiffBIR/                # DiffBIR baseline
+├── TAIRL/                  # DDPO/GRPO + LoRA 학습 코드와 설정
+├── Dataset_pipeline/
+│   ├── build_ood_text_eval_dataset.py
+│   └── SA-Text_Dataset/    # SA-Text 큐레이션 + Bridge text spotting
 ├── Dataset/
-│   ├── SA-Text/
-│   ├── SA-Text-test/
+│   ├── SA-Text/            # 원본 SA-Text train
+│   ├── SA-Text-test/       # degradation level 1/2/3 평가셋
+│   ├── SA-Text-lv2-10000/  # TAIRL용 고정 10K HQ/LQ pair
+│   ├── DrealSR/
+│   ├── realsr/
+│   ├── OOD-text-test/      # DrealSR + RealSR 기반 OOD text 평가셋
 │   └── gopro/
-└── Dataset_pipeline/
-    └── SA-Text_Dataset/
+├── Slurm/
+│   ├── Baselines/TAIR/
+│   └── Baselines/DiffBIR/
+└── Results/
+    ├── Baselines/
+    │   ├── TAIR/
+    │   ├── DiffBIR/
+    │   └── Compare/
+    └── TAIRL/
 ```
 
----
+세부 구현과 upstream 사용법은 각 하위 문서를 참고하세요.
 
-## Conda Environments — 한눈에
+- [TAIR README](TAIR/README.md)
+- [DiffBIR README](DiffBIR/README.md)
+- [TAIRL README](TAIRL/README.md)
+- [SA-Text pipeline README](Dataset_pipeline/SA-Text_Dataset/README.md)
 
-| 워크플로우 | 추천 환경 | Python | 비고 |
-|---|---|---|---|
-| **DiffBIR inference** (Ampere/Ada: A100, RTX 3090/4090, A6000 등) | `diffbir` | 3.10 | 표준 진입점 |
-| **DiffBIR inference** (Blackwell: RTX PRO 6000 sm_120) | `diffbir_bw` | 3.10 | `ATTN_MODE=sdp` 필수 |
-| **SA-Text dataset pipeline** | `dataset_curation` | 3.10 | Bridge spotter + 2× VLM 통합 단일 env |
-| **TAIRL — DDPO / GRPO LoRA fine-tuning** | `diffbir` (학습) + `dataset_curation` (reward subprocess) | 3.10 | 두 env가 step마다 함께 호출됨 |
+## Quick Start
 
-> 환경 위치: `/home/james2602/miniconda3/envs/{diffbir,diffbir_bw,dataset_curation,tair}`
-
-### DiffBIR env 셋업 (최초 1회)
-
-`DiffBIR/README.md`의 기본 설치는 순수 DiffBIR inference 기준입니다. 이 repo에서는 SA-Text parquet helper, reward plot, TAIRL wandb logging까지 같은 `diffbir` env에서 돌리므로 몇 가지 패키지를 추가로 설치합니다.
-
-Ampere/Ada 계열 GPU(A100, RTX 3090/4090, A6000 등)는 upstream requirements를 그대로 쓰는 `diffbir` env를 사용합니다.
+모든 명령은 저장소 루트에서 실행하는 것을 기준으로 합니다.
 
 ```bash
 cd /scratch2/james2602/TextAwareIR
+```
 
+### Baseline 100-image evaluation
+
+아래 `bash` 스크립트는 GPU가 이미 할당된 interactive shell에서 실행합니다.
+
+```bash
+# DiffBIR: SA-Text-test level 2, first 100 images
+bash Slurm/Baselines/DiffBIR/eval_diffbir_baseline.sh
+
+# TAIR: SA-Text-test level 2, first 100 images
+bash Slurm/Baselines/TAIR/eval_tair_baseline.sh
+
+# OOD-text-test
+bash Slurm/Baselines/DiffBIR/eval_diffbir_baseline_ood_text_test.sh
+bash Slurm/Baselines/TAIR/eval_tair_baseline_ood_text_test.sh
+```
+
+샘플 수와 배치는 환경변수로 변경할 수 있습니다.
+
+```bash
+NUM_IMAGES=20 START=100 BATCH_SIZE=4 \
+  bash Slurm/Baselines/DiffBIR/eval_diffbir_baseline.sh
+```
+
+### Slurm submission
+
+```bash
+# DiffBIR baseline 평가
+sbatch Slurm/Baselines/DiffBIR/eval_diffbir_baseline.slurm
+
+# DiffBIR SA-Text-test 2개 chunk inference / annotation
+sbatch Slurm/Baselines/DiffBIR/infer_sa_text_lv2_2gpu.slurm
+sbatch Slurm/Baselines/DiffBIR/eval_sa_text_lv2_2gpu.slurm
+
+# TAIR 2-GPU inference + annotation + DiffBIR 비교
+sbatch Slurm/Baselines/TAIR/run_sa_text_lv2_2gpu.slurm
+
+# DDPO 11-trial sweep
+sbatch TAIRL/slurm/ddpo_lora_hparam.slurm
+
+# GRPO KL / PSNR 10-trial sweep
+sbatch TAIRL/slurm/grpo_lora_g8_kl_psnr_10.slurm
+```
+
+## Environment Setup
+
+### Environment matrix
+
+| Workflow | Environment | Python | Main role |
+|---|---|---:|---|
+| DiffBIR inference/eval | `diffbir` | 3.10 | Ampere/Ada GPU용 DiffBIR |
+| TAIR inference | `tair` | 3.10 | TeReDiff inference/training |
+| Dataset/OCR pipeline | `dataset_curation` | 3.10 | Bridge, Detectron2, OVIS, Qwen |
+| TAIRL training | `diffbir` + `dataset_curation` | 3.10 | rollout/update + OCR reward subprocess |
+
+### DiffBIR: Ampere/Ada
+
+```bash
 conda create -n diffbir python=3.10 -y
 conda activate diffbir
 python -m pip install --upgrade pip
-
-# DiffBIR upstream dependency set: torch 2.2.2 + cu118 + xformers
 python -m pip install -r DiffBIR/requirements.txt
 
-# TextAwareIR 추가 의존성
+# Repository-specific helpers and TAIRL logging
 python -m pip install hydra-core pyarrow pyyaml wandb matplotlib tqdm
 ```
 
-Blackwell 계열 GPU(RTX PRO 6000, sm_120)는 `DiffBIR/requirements.txt`의 `torch==2.2.2+cu118`, `xformers==0.0.25.post1+cu118`를 그대로 쓰면 커널 호환 문제가 납니다. 이 경우 `diffbir_bw` env에서 torch cu128을 먼저 설치하고, torch/xformers pin을 제외한 나머지 requirements만 설치합니다.
+### TAIR
 
 ```bash
-cd /scratch2/james2602/TextAwareIR
+conda create -n tair python=3.10 -y
+conda activate tair
 
-conda create -n diffbir_bw python=3.10 -y
-conda activate diffbir_bw
-python -m pip install --upgrade pip
+cd TAIR
+python -m pip install \
+  torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
+  --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -r requirements.txt
 
-python -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
-    --index-url https://download.pytorch.org/whl/cu128
-
-grep -Ev '^(--extra-index-url|torch==|torchvision==|torchaudio==|xformers==)' \
-    DiffBIR/requirements.txt > /tmp/diffbir_bw_requirements.txt
-python -m pip install -r /tmp/diffbir_bw_requirements.txt
-python -m pip install hydra-core pyarrow pyyaml wandb matplotlib tqdm
+cd detectron2
+python -m pip install --no-build-isolation -e .
+cd ../testr
+python -m pip install --no-build-isolation -e .
+cd ../..
 ```
 
-간단 확인:
-
-```bash
-python - <<'PY'
-import torch, hydra, pyarrow, yaml
-print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("cuda available", torch.cuda.is_available())
-PY
-```
-
-TAIRL 학습 config는 아래 weight 경로를 참조합니다. DiffBIR inference는 일부 weight를 자동 다운로드하지만, TAIRL은 config의 파일명이 정확히 있어야 합니다.
-
-```text
-DiffBIR/weights/sd2.1-base-zsnr-laionaes5.ckpt
-DiffBIR/weights/DiffBIR_v2.1.pt
-DiffBIR/weights/realesrgan_s4_swinir_100k.pth
-```
-
----
-
-## 1. DiffBIR Inference
-
-DiffBIR으로 저화질 이미지 → 복원 이미지를 생성합니다.
-
-### 1-A. 단일 GPU (수동 실행)
-
-```bash
-# Ampere / Ada GPU (A100, RTX 3090, RTX 4090, A6000 ...)
-conda activate diffbir
-python DiffBIR/inference.py --input <input_dir> --output <output_dir>
-
-# Blackwell GPU (RTX PRO 6000, sm_120)
-conda activate diffbir_bw
-ATTN_MODE=sdp python DiffBIR/inference.py --input <input_dir> --output <output_dir>
-```
-
-> **왜 Blackwell은 별도 env가 필요한가**
-> `diffbir`의 `xformers`/`flash-attn` 바이너리는 sm_120 커널을 포함하지 않습니다. `diffbir_bw`는 torch 2.7 + cu128로 빌드되어 있고, attention은 PyTorch SDPA로 우회합니다(`ATTN_MODE=sdp`).
-
-### 1-B. SA-Text test 멀티 GPU 배치 (slurm)
-
-`Slurm/Baselines/DiffBIR/` 에 SA-Text test set을 chunk 단위로 분산 처리하는 스크립트가 있습니다.
-
-```bash
-# sbatch (suma_a6000 파티션, 2-GPU array)
-sbatch Slurm/Baselines/DiffBIR/infer_sa_text_lv2_2gpu.slurm
-
-# 또는 인터랙티브 (2-GPU 노드 위에서)
-GPU_IDS=0,1 bash Slurm/Baselines/DiffBIR/infer_sa_text_lv2_2gpu.sh
-```
-
-기본 동작
-- 사용 env: `diffbir` (`PYTHON_BIN=/home/james2602/miniconda3/envs/diffbir/bin/python`)
-- 입력: `Dataset/SA-Text-test/data/test-00000-of-00001.parquet`
-- 출력: `Results/Baselines/DiffBIR/sa_text_test_lv2_2gpu/chunk_{0,1}/`
-- 주요 env vars: `SA_TEXT_LEVEL`, `CHUNK_SIZE`, `DIFFBIR_UPSCALE`, `DIFFBIR_STEPS`, `DIFFBIR_CFG_SCALE`, `DIFFBIR_CAPTIONER`, `DIFFBIR_PRECISION`
-
-### 1-C. SA-Text test 평가
-
-복원 결과 위에 Bridge spotter로 OCR 예측을 뽑고, GT와 비교해 텍스트 메트릭을 계산합니다. **두 환경이 모두 필요**합니다:
-
-```bash
-sbatch Slurm/Baselines/DiffBIR/eval_sa_text_lv2_2gpu.slurm
-```
-
-| 역할 | 환경 | 이유 |
-|---|---|---|
-| OCR 예측 (Bridge spotter) | `dataset_curation` | detectron2 + adet 빌드 보유 |
-| 평가 메트릭 계산 | `diffbir` | DiffBIR 평가 코드 의존성 |
-
----
-
-## 2. SA-Text Dataset Pipeline
-
-SA-1B → text-rich crop → 2× VLM 합의 → blur 필터링 → 최종 dataset JSON 까지 14단계로 큐레이션합니다.
-
-### Env 셋업 (최초 1회)
+### Dataset curation / Bridge reward
 
 ```bash
 conda create -n dataset_curation python=3.10 -y
 conda activate dataset_curation
 
-# PyTorch (GPU 세대에 맞춰 택1)
-pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 \
-    --index-url https://download.pytorch.org/whl/cu124           # Ampere/Ada
-# 또는
-pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
-    --index-url https://download.pytorch.org/whl/cu128           # Blackwell
+# Ampere/Ada example
+python -m pip install \
+  torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 \
+  --index-url https://download.pytorch.org/whl/cu124
 
-# 공통 의존성
-pip install opencv-python scipy timm shapely albumentations Polygon3 pandas tqdm pyyaml
-pip install transformers==4.51.3 accelerate scikit-learn qwen_vl_utils pytz
-pip install flash-attn --no-build-isolation                      # Ampere/Ada 만
+python -m pip install \
+  opencv-python scipy timm shapely albumentations Polygon3 \
+  pandas tqdm pyyaml transformers==4.51.3 accelerate \
+  scikit-learn qwen_vl_utils pytz
+python -m pip install flash-attn --no-build-isolation
+python -m pip install setuptools==59.5.0
 
-# Bridge spotter 빌드 (한 env 안에서)
-pip install setuptools==59.5.0
-cd Dataset_pipeline/SA-Text_Dataset/Bridging-Text-Spotting/detectron2 && python setup.py build develop && cd ..
-python setup.py build develop && cd ../..
+cd Dataset_pipeline/SA-Text_Dataset/Bridging-Text-Spotting/detectron2
+python setup.py build develop
+cd ..
+python setup.py build develop
+cd ../../..
 ```
 
-### 실행
+간단한 환경 확인:
+
+```bash
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("CUDA runtime:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+PY
+```
+
+## Weights
+
+현재 기본 설정이 참조하는 주요 파일은 다음과 같습니다.
+
+```text
+DiffBIR/weights/
+├── sd2.1-base-zsnr-laionaes5.ckpt
+├── DiffBIR_v2.1.pt
+└── realesrgan_s4_swinir_100k.pth
+
+TAIR/weights/
+├── sd2.1-base-zsnr-laionaes5.ckpt
+├── DiffBIR_v2.1.pt
+├── realesrgan_s4_swinir_100k.pth
+└── terediff_stage3.pt
+
+Dataset_pipeline/SA-Text_Dataset/Bridging-Text-Spotting/
+└── Bridge_tt.pth
+```
+
+TAIR의 DiffBIR 관련 weight는 다음 스크립트로 받을 수 있습니다.
+
+```bash
+cd TAIR
+bash download_weights.sh
+```
+
+`terediff_stage3.pt`와 text spotting checkpoint는
+[TAIR README](TAIR/README.md)의 별도 다운로드 안내를 따르세요.
+
+TAIRL은 `TAIRL/configs/*.yaml`에 적힌 파일명이 정확히 존재해야 합니다.
+
+## Baseline Evaluation
+
+### Standalone inference
+
+DiffBIR은 Hydra override 형식을 사용합니다.
+
+```bash
+conda activate diffbir
+cd DiffBIR
+
+python inference.py \
+  task=sr \
+  model.version=v2.1 \
+  io.input=/path/to/lq_images \
+  io.output=/path/to/restored_images
+```
+
+TAIR은 config 파일과 입력 디렉터리를 명시합니다.
+
+```bash
+conda activate tair
+cd TAIR
+
+python infer.py \
+  --config configs/val/val_terediff.yaml \
+  --infer-config configs/infer/infer_terediff.yaml \
+  --config_testr testr/configs/TESTR/TESTR_R_50_Polygon.yaml \
+  --input /path/to/lq_images \
+  --output-dir /path/to/restored_images
+```
+
+### Evaluation scripts
+
+| Script | Default dataset | Default output |
+|---|---|---|
+| `Slurm/Baselines/DiffBIR/eval_diffbir_baseline.sh` | `Dataset/SA-Text-test` | `Results/Baselines/DiffBIR/sa_text_test_lv2_default_reward` |
+| `Slurm/Baselines/TAIR/eval_tair_baseline.sh` | `Dataset/SA-Text-test` | `Results/Baselines/TAIR/sa_text_test_lv2_default_reward` |
+| `Slurm/Baselines/DiffBIR/eval_diffbir_baseline_ood_text_test.sh` | `Dataset/OOD-text-test` | `Results/Baselines/DiffBIR/ood_text_test_lv2_default_reward` |
+| `Slurm/Baselines/TAIR/eval_tair_baseline_ood_text_test.sh` | `Dataset/OOD-text-test` | `Results/Baselines/TAIR/ood_text_test_default_reward` |
+
+각 결과 디렉터리에는 일반적으로 다음 파일이 생성됩니다.
+
+```text
+metrics_summary.json
+per_image_metrics.csv
+resolved_config.yaml
+```
+
+### Inference-time benchmark
+
+```bash
+# 두 baseline을 순차 실행
+bash Slurm/Baselines/benchmark_inference_time_sa_text_10.sh
+
+# 개별 Slurm job
+sbatch Slurm/Baselines/DiffBIR/benchmark_diffbir_inference_time_sa_text_10.slurm
+sbatch Slurm/Baselines/TAIR/benchmark_tair_inference_time_sa_text_10.slurm
+```
+
+기본 결과는 `Results/Baselines/{DiffBIR,TAIR}/inference_time/`에 저장됩니다.
+
+## Dataset Preparation
+
+### SA-Text curation pipeline
+
+SA-1B 이미지에서 text-rich crop을 찾고, Bridge와 두 VLM의 결과를 조합해
+최종 restoration dataset을 만듭니다.
+
+먼저 아래 config의 입력, Bridge, 출력 경로를 현재 머신에 맞게 수정합니다.
+
+```text
+Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml
+```
+
+실행:
 
 ```bash
 conda activate dataset_curation
 
-# config.yaml 의 sa1b_base_dir / bridge_repo_dir / output 경로를 본 머신에 맞게 수정
 python Dataset_pipeline/SA-Text_Dataset/dataset_curation/main_pipeline.py \
-    --config Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml \
-    --sa1b_subfolder "sa_000000" \
-    --output_suffix "_sa_000000"
+  --config Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml \
+  --sa1b_subfolder sa_000000 \
+  --output_suffix _sa_000000
 ```
 
-### 14 단계 흐름 (요약)
+Pipeline stage:
 
-| # | 단계 | 출력 |
-|---|---|---|
-| 1 | Bridge Stage 1 detection (원본) | `bridge_stage1_results*.json` |
-| 2–3 | Crop region 정의 & 512px crop 생성 | `cropped_images/*.jpg` |
-| 4 | Bridge Stage 2 detection (crop) | `bridge_stage2_raw_results*.json` |
-| 4.5 | 중복 box 제거 (IoU≥0.9) | `bridge_stage2_filtered*.json` |
-| 5–6 | VLM1 (OVIS), VLM2 (Qwen) 텍스트 인식 | `OVIS_raw*.json`, `Qwen_raw*.json` |
-| 7–9 | 빈 결과 필터 → 두 VLM 결과 병합 | `vlm_combined*.json` |
-| 10–11 | 두 VLM 완전 합의 이미지 추출 | `agreed_*.json/.txt` |
-| 12 | Qwen blur 평가 | `blur_assessment*.csv` |
-| 13 | blur 태깅 & non-blurry 필터 | `tagged_*`, `restoration_*` (intermediate) |
-| 14 | 최종 포맷팅 | `full_dataset*.json`, `restoration_dataset*.json` |
+| Stage | Description |
+|---|---|
+| `start` | 원본 이미지 Bridge detection |
+| `cropping` | text region을 포함하는 512px crop 생성 |
+| `bridge_stage2` | crop에서 Bridge 재검출 |
+| `filter_duplicates` | 중복 detection 제거 |
+| `vlm1_recognition` | OVIS recognition |
+| `vlm2_recognition` | Qwen recognition |
+| `vlm_filtering` | 빈 결과 및 invalid 결과 제거 |
+| `vlm_comparison` | 두 VLM 결과 병합/비교 |
+| `agreement_extraction` | VLM 합의 sample 추출 |
+| `blur_assessment` | Qwen 기반 blur 평가 |
+| `blur_tag_filter` | blur tag 및 restoration subset 생성 |
+| `final_formatting` | 최종 dataset JSON 생성 |
 
-> 중간 단계부터 재실행: `--start_from <stage>` / 단일 stage만: `--run_only_stage <stage>`
-
-Stage 이름은 `main_pipeline.py:36-40` 의 `valid_stages` 리스트 참고.
-
----
-
-## 3. TAIRL — RL Fine-tuning (DDPO / GRPO + LoRA)
-
-DiffBIR controlnet에 **LoRA**를 주입하고, **Bridge spotter 기반 OCR reward**로 DDPO 또는 GRPO로 fine-tuning. 단일 진입점 `TAIRL/train_grpo_ddpo_lora.py`가 `train.algorithm` 스위치로 두 알고리즘을 처리합니다.
-
-### Reward 정의
-
-이미지마다 GT instance 수 `A`, IoU≥thr 매칭 `M`일 때 (`tairl/reward.py`):
-
-```
-matched_mean_reward = mean over matched pairs of  max(1 − lev/len(gt_text), 0)
-missed              = A − M
-final_reward        = matched_mean_reward − miss_penalty × missed
-final_reward_norm   = matched_mean_reward − missed/A                  # ∈ [−1, 1]
-```
-
-config의 `reward.variant`로 `final_reward` 또는 `final_reward_norm` 선택.
-
-### 두 env가 step마다 함께 호출되는 구조
-
-```
-[diffbir env]   rollout (DiffBIR LoRA로 LQ → restored, group_size=6 for GRPO)
-       ↓ 이미지 dump (work_dir/step_*/images/)
-[dataset_curation env]   bridge subprocess (detectron2 + Bridge spotter inference)
-       ↓ bbox/rec JSON
-[diffbir env]   compose_image_reward → PPO clip + KL → AdamW
-```
-
-config 의 `reward.bridge_env_python` 가 subprocess 호출 시 사용되는 두 번째 interpreter 경로입니다.
-
-### 디렉터리
-
-```
-TAIRL/
-├── train_grpo_ddpo_lora.py   # 진입점 (grpo / ddpo 둘 다)
-├── configs/
-│   ├── ddpo_lora.yaml         # DDPO baseline
-│   ├── grpo_lora_g6.yaml      # GRPO (group_size=6)
-│   └── hparam_search_small.yaml
-├── tairl/
-│   ├── data.py                # SATextParquetDataset
-│   ├── ddpo_sampler.py        # spaced sampler with logprob
-│   ├── lora.py                # LoRA inject / state_dict
-│   └── reward.py              # BridgeReward, compose_image_reward
-├── slurm/
-│   ├── grpo_lora_g6.slurm     # GRPO 단일 run
-│   └── ddpo_lora_hparam.slurm # DDPO LoRA hparam sweep (array 0-10)
-└── train_data/sa_text_train_10000.jsonl
-```
-
-### 실행
+중간 단계부터 재시작하거나 한 단계만 실행할 수 있습니다.
 
 ```bash
-# 단일 run
-sbatch Slurm/TAIRL/grpo_lora_g6.slurm
-# 또는
-bash TAIRL/run_grpo_g6.sh
+python Dataset_pipeline/SA-Text_Dataset/dataset_curation/main_pipeline.py \
+  --config Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml \
+  --start_from bridge_stage2
 
-# DDPO hparam sweep (11개 trial array, baseline=trial 3)
+python Dataset_pipeline/SA-Text_Dataset/dataset_curation/main_pipeline.py \
+  --config Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml \
+  --start_from blur_assessment \
+  --run_only_stage blur_assessment
+```
+
+### TAIRL 10K level-2 pairs
+
+고정 manifest의 SA-Text 10K sample을 512x512 HQ와 128x128 level-2 LQ pair로 만듭니다.
+
+```bash
+sbatch TAIRL/slurm/make_sa_text_lv2_10000.slurm
+
+# 또는 할당된 GPU에서 직접 실행
+bash TAIRL/slurm/make_sa_text_lv2_10000.sh
+```
+
+출력:
+
+```text
+Dataset/SA-Text-lv2-10000/
+├── data/train-*.parquet
+└── README.md
+```
+
+### OOD text evaluation set
+
+DrealSR과 RealSR의 대응 HQ/LQ pair에서 readable text가 있는 scene을 선별합니다.
+기본값은 source별 80장, 총 160장입니다.
+
+```bash
+conda activate dataset_curation
+
+python Dataset_pipeline/build_ood_text_eval_dataset.py \
+  --dreal-root Dataset/DrealSR/raw \
+  --realsr-root "Dataset/realsr/RealSR (Final)" \
+  --output-dir Dataset/OOD-text-test \
+  --per-source 80 \
+  --annotation-mode bridge \
+  --write-parquet \
+  --bridge-env-python \
+    /home/james2602/miniconda3/envs/dataset_curation/bin/python \
+  --overwrite
+```
+
+생성 과정:
+
+1. HQ image에 Bridge OCR을 실행해 readable text가 있는 pair를 선별합니다.
+2. text bbox를 포함하는 512x512 HQ crop을 만듭니다.
+3. 같은 좌표를 해상도 비율에 맞춰 LQ에 투영합니다.
+4. Bridge OCR 또는 Bridge + OVIS/Qwen 합의로 annotation을 만듭니다.
+5. source와 scene이 중복되지 않도록 최종 sample을 선택합니다.
+
+출력 구조:
+
+```text
+Dataset/OOD-text-test/
+├── hq/
+├── lq/
+├── annotations/
+│   ├── manifest.json
+│   ├── manifest.jsonl
+│   └── text_detection_results.json
+├── data/
+│   └── test-00000-of-00001.parquet
+└── summary.json
+```
+
+주요 옵션:
+
+- `--annotation-mode bridge`: Bridge의 `rec` 결과를 annotation으로 사용
+- `--annotation-mode vlm_agreement`: Bridge stage 2와 OVIS/Qwen 합의까지 실행
+- `--resize-lq-to-crop-size`: native LQ crop을 512x512로 resize
+- `--allow-fewer`: source별 목표 수량보다 적어도 실패하지 않음
+- `--write-parquet`: SA-Text와 유사한 parquet 추가 생성
+
+## TAIRL Training
+
+TAIRL은 pretrained DiffBIR를 고정하고 ControlNet에만 LoRA를 삽입합니다.
+
+```text
+[diffbir env]
+LQ -> DiffBIR LoRA rollout -> restored images
+                              |
+                              v
+[dataset_curation env]
+Bridge text spotting -> bbox / recognized text
+                              |
+                              v
+[diffbir env]
+OCR reward + optional PSNR reward -> PPO/GRPO update
+```
+
+### Reward
+
+IoU threshold 이상으로 매칭된 GT/prediction pair의 normalized Levenshtein
+similarity를 사용합니다.
+
+```text
+matched_mean_reward =
+  mean(max(1 - levenshtein(pred, gt) / len(gt), 0))
+
+final_reward =
+  matched_mean_reward
+  - miss_penalty * missed_gt
+  - false_positive_penalty * false_positive
+
+final_reward_norm =
+  matched_mean_reward
+  - miss_penalty * missed_gt / max(num_gt, 1)
+  - false_positive_penalty * false_positive / max(num_gt, 1)
+```
+
+설정은 `reward.variant`, `reward.miss_penalty`,
+`reward.false_positive_penalty`, `reward.psnr_weight`로 제어합니다.
+
+### Training commands
+
+```bash
+# DDPO 11-trial OAT sweep
 sbatch TAIRL/slurm/ddpo_lora_hparam.slurm
-# 또는
-bash TAIRL/run_hparam_search.sh
+
+# 기본 GRPO job
+sbatch TAIRL/slurm/grpo_lora_g6.slurm
+
+# GRPO reward/KL/PSNR 실험: 현재 파일 기본값은 task 0만 제출
+sbatch TAIRL/slurm/grpo_lora_g8_hparam_10.slurm
+
+# 전체 8개 trial 제출
+sbatch --array=0-7 TAIRL/slurm/grpo_lora_g8_hparam_10.slurm
+
+# KL 5개 + PSNR weight 5개
+sbatch TAIRL/slurm/grpo_lora_g8_kl_psnr_10.slurm
 ```
 
-DDPO sweep는 baseline `r8 / lr3e-5 / clip0.1 / kl0.02 / norm reward / miss1.0 / fp0.25` 에서 한 번에 하나씩 변경하는 OAT(one-factor-at-a-time) 구성:
+> `grpo_lora_g6.yaml`과 일부 `g6` 스크립트명은 초기 실험 이름을 유지하고 있지만,
+> 현재 YAML의 기본값은 `grpo.group_size: 8`,
+> `grpo.generation_microbatch: 8`입니다.
 
-| 축 | trial id |
-|---|---|
-| Learning rate (lr=1e-5 / 3e-5 / 1e-4 at r=4) | 0, 1, 2 |
-| LoRA rank (4 / 8 / 16) | 1, 3, 6 |
-| PPO clip (0.1 / 0.2) | 3, 4 |
-| KL coef (0.02 / 0) | 3, 5 |
-| Reward variant (norm / raw) | 3, 7 |
-| Miss penalty (1.0 / 0.5) | 3, 8 |
-| FP penalty (0.0 / 0.25 / 0.5) | 9, 3, 10 |
+직접 실행할 때는 YAML 값 뒤에 `key=value` override를 전달할 수 있습니다.
 
-### 결과 위치
+```bash
+conda activate diffbir
 
-```
-Results/TAIRL/
-├── ddpo_lora/<run_name>/
-└── grpo_lora_g6/<run_name>/
-       metrics.jsonl, resolved_config.yaml, reward_work/, wandb/
+python TAIRL/train_grpo_ddpo_lora.py \
+  --config TAIRL/configs/grpo_lora_g6.yaml \
+  train.train_steps=100 \
+  train.output_dir=Results/TAIRL/debug_grpo \
+  grpo.group_size=8 \
+  grpo.generation_microbatch=1 \
+  wandb.mode=offline
 ```
 
-`wandb.group=grpo` 또는 `ddpo_hparam`으로 묶이므로 wandb UI에서 한 번에 비교 가능.
+W&B online logging 전에는 `diffbir` 환경에서 한 번 로그인합니다.
 
----
+```bash
+python -m wandb login
+```
 
-## 클러스터 파티션 참고
+네트워크가 없는 compute node에서는 `WANDB_MODE=offline`을 사용합니다.
 
-| 파티션 | GPU | sm | QOS |
-|---|---|---|---|
-| `suma_pro6000`, `asus_pro6000` | RTX PRO 6000 Blackwell | 120 | `pro6000_qos` |
-| `suma_a100` | A100 | 80 | `a100_qos` (권한 필요) |
-| `suma_a6000`, `gigabyte_a6000` | A6000 | 86 | `big_qos` |
-| `suma_rtx4090` | RTX 4090 | 89 | `big_qos` |
-| `base_suma_rtx3090`, `big_suma_rtx3090`, `dell_rtx3090` | RTX 3090 | 86 | `base_qos` |
+## Outputs and Logs
 
-GPU 세대별 env 매칭
-- **Blackwell (sm_120)** → `diffbir_bw` (DiffBIR inference / RL), `dataset_curation`(cu128 빌드)
-- **그 외 (sm_80–89)** → `diffbir` (DiffBIR), `dataset_curation`(cu124 빌드)
+### Baselines
 
----
+```text
+Results/Baselines/
+├── DiffBIR/
+│   ├── sa_text_test_lv2_default_reward/
+│   ├── ood_text_test_lv2_default_reward/
+│   └── inference_time/
+├── TAIR/
+│   ├── sa_text_test_lv2_default_reward/
+│   ├── ood_text_test_default_reward/
+│   └── inference_time/
+└── Compare/
+```
 
-## 알려진 패치
+### TAIRL
 
-- `DiffBIR/diffbir/sampler/edm_sampler.py` — `torch.Tuple` → `typing.Tuple` (PyTorch 2.x 호환)
-- `basicsr/data/degradations.py` — `torchvision.transforms.functional_tensor` → `functional` (torchvision 0.22 호환)
-- `Dataset_pipeline/SA-Text_Dataset/Bridging-Text-Spotting/setup.py` — `Pillow==9.1` → `Pillow>=9.1` (scikit-image 충돌 회피)
+```text
+Results/TAIRL/<experiment>/<trial>/
+├── metrics.jsonl
+├── eval_metrics.jsonl
+├── resolved_config.yaml
+├── checkpoints/
+├── reward_work/
+└── wandb/
+```
 
----
+Slurm stdout/stderr:
 
-## 인용
+```text
+Slurm/Baselines/{TAIR,DiffBIR}/logs/
+TAIRL/slurm/logs/
+```
+
+## Path Configuration
+
+다른 경로나 conda 환경을 사용할 때 우선 확인할 위치:
+
+1. `TAIRL/configs/ddpo_lora.yaml`
+2. `TAIRL/configs/grpo_lora_g6.yaml`
+3. `Dataset_pipeline/SA-Text_Dataset/dataset_curation/config.yaml`
+4. 실행할 `Slurm/**/*.sh` 및 `Slurm/**/*.slurm`
+
+대부분의 shell script는 아래 환경변수 중 일부를 지원합니다.
+
+```bash
+ROOT_DIR=/new/path/TextAwareIR
+PYTHON_BIN=/new/env/bin/python
+TAIR_PYTHON_BIN=/new/tair/env/bin/python
+DIFFBIR_PYTHON_BIN=/new/diffbir/env/bin/python
+PRED_PYTHON_BIN=/new/dataset_curation/env/bin/python
+OUTPUT_DIR=/new/output/path
+```
+
+단, 일부 오래된 2-GPU 스크립트는 `ROOT_DIR`이 고정되어 있으므로 파일 안의
+절대경로도 함께 수정해야 합니다.
+
+## Cluster Notes
+
+현재 주요 Slurm 스크립트는 다음 설정을 사용합니다.
+
+| Purpose | Partition | QOS |
+|---|---|---|
+| 일반 1-GPU baseline/GRPO | `suma_a6000,gigabyte_a6000,tyan_a6000,asus_6000ada` | `big_qos` |
+| 기존 2-GPU/chunk pipeline | `suma_a6000` | `big_qos` |
+
+다른 클러스터에서는 각 `.slurm` 파일의 `--partition`, `--qos`, `--gres`,
+로그 경로를 수정하세요.
+
+## Known Compatibility Notes
+
+- `DiffBIR/diffbir/sampler/edm_sampler.py`는 `typing.Tuple`을 사용하도록 반영되어 있습니다.
+- `Bridging-Text-Spotting/setup.py`는 `Pillow>=9.1`로 version conflict를 완화합니다.
+- torchvision 0.22에서 BasicSR의 `functional_tensor` import error가 발생하면,
+  설치된 BasicSR의 import를 `torchvision.transforms.functional` 기준으로 조정해야 합니다.
+
+## Citation
 
 ```bibtex
 @article{min2025text,
